@@ -1,0 +1,5 @@
+node_modules
+.turbo
+.raincheck-data
+dist
+out
