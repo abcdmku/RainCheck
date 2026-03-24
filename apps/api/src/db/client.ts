@@ -1,0 +1,85 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import Database from 'better-sqlite3'
+import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { resolveWorkspacePath } from '../lib/paths'
+import {
+  conversationsTable,
+  messagesTable,
+  providerCredentialsTable,
+  settingsTable,
+} from './schema'
+
+export type RainCheckDb = ReturnType<typeof createDb>['db']
+
+function resolveDbPath(dbUrl: string) {
+  if (dbUrl === ':memory:' || dbUrl.startsWith('file:')) {
+    return dbUrl
+  }
+
+  return resolveWorkspacePath(dbUrl)
+}
+
+export function createDb(dbUrl: string) {
+  const resolvedDbUrl = resolveDbPath(dbUrl)
+
+  if (resolvedDbUrl !== ':memory:' && !resolvedDbUrl.startsWith('file:')) {
+    fs.mkdirSync(path.dirname(resolvedDbUrl), {
+      recursive: true,
+    })
+  }
+
+  const sqlite = new Database(resolvedDbUrl)
+  sqlite.pragma('journal_mode = WAL')
+  sqlite.pragma('foreign_keys = ON')
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      parts_json TEXT NOT NULL,
+      citations_json TEXT NOT NULL,
+      artifacts_json TEXT NOT NULL,
+      provider TEXT,
+      model TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      id TEXT PRIMARY KEY,
+      settings_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_credentials (
+      id TEXT PRIMARY KEY,
+      provider_id TEXT NOT NULL,
+      encrypted_value TEXT NOT NULL,
+      use_byok INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `)
+
+  return {
+    sqlite,
+    db: drizzle(sqlite, {
+      schema: {
+        conversationsTable,
+        messagesTable,
+        settingsTable,
+        providerCredentialsTable,
+      },
+    }),
+  }
+}

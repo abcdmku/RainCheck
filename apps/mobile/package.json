@@ -1,0 +1,30 @@
+{
+  "name": "@raincheck/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "App.tsx",
+  "scripts": {
+    "start": "expo start",
+    "dev": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check App.tsx app.config.ts",
+    "format": "biome format --write App.tsx app.config.ts"
+  },
+  "dependencies": {
+    "expo": "^55.0.8",
+    "expo-constants": "^55.0.9",
+    "expo-status-bar": "^3.0.8",
+    "react": "^19.2.0",
+    "react-native": "0.82.0",
+    "react-native-safe-area-context": "^5.6.2",
+    "react-native-webview": "^13.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.2.0",
+    "@types/react-native": "^0.73.0",
+    "typescript": "^5.9.3"
+  }
+}

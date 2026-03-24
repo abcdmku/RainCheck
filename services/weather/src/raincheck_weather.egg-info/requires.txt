@@ -1,0 +1,13 @@
+fastapi<1.0,>=0.116
+httpx<1.0,>=0.28
+pydantic<3.0,>=2.11
+uvicorn<1.0,>=0.35
+
+[analysis]
+matplotlib<4.0,>=3.10
+metpy<2.0,>=1.7
+xarray<2026.0.0,>=2025.1.0
+
+[dev]
+pytest<9.0,>=8.4
+pytest-asyncio<2.0,>=1.1

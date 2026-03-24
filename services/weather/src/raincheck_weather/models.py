@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class LocationContext(StrictModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    name: str | None = None
+    timezone: str | None = None
+
+    def display_name(self) -> str:
+        if self.name:
+            return self.name
+
+        return f"{self.latitude:.4f}, {self.longitude:.4f}"
+
+
+class SourceCatalogEntry(StrictModel):
+    sourceId: str
+    name: str
+    official: bool
+    authRequired: bool
+    geographicCoverage: str
+    temporalCoverage: str
+    refreshCadence: str
+    validTimeSemantics: str
+    supportedFormats: list[str]
+    unitsNotes: str
+    projectionNotes: str | None = None
+    latencyNotes: str
+    costNotes: str
+    recommendedUseCases: list[str]
+    implemented: bool = True
+
+
+class ProductCatalogEntry(StrictModel):
+    productId: str
+    sourceId: str
+    name: str
+    category: str
+    refreshCadence: str
+    validTimeSemantics: str
+    supportedFormats: list[str]
+    notes: str
+    implemented: bool = True
+
+
+class CatalogResponse(StrictModel):
+    sources: list[SourceCatalogEntry]
+    products: list[ProductCatalogEntry]
+
+
+class CitationBundle(StrictModel):
+    sourceId: str
+    productId: str
+    label: str
+    official: bool
+    fetchedAt: datetime
+    validAt: datetime | None = None
+    url: str | None = None
+
+
+class Measurement(StrictModel):
+    value: float | None = None
+    unitCode: str | None = None
+
+
+class CurrentConditions(StrictModel):
+    stationId: str | None = None
+    stationName: str | None = None
+    observedAt: datetime | None = None
+    textDescription: str | None = None
+    icon: str | None = None
+    temperature: Measurement | None = None
+    dewpoint: Measurement | None = None
+    relativeHumidity: Measurement | None = None
+    windSpeed: Measurement | None = None
+    windDirection: Measurement | None = None
+    barometricPressure: Measurement | None = None
+    visibility: Measurement | None = None
+
+
+class ForecastPeriod(StrictModel):
+    name: str
+    startTime: datetime
+    endTime: datetime
+    isDaytime: bool
+    temperature: float | None = None
+    temperatureUnit: str | None = None
+    probabilityOfPrecipitation: Measurement | None = None
+    windSpeed: str | None = None
+    windDirection: str | None = None
+    shortForecast: str
+    detailedForecast: str
+    icon: str | None = None
+
+
+class AlertSummary(StrictModel):
+    id: str
+    event: str
+    severity: str | None = None
+    certainty: str | None = None
+    urgency: str | None = None
+    headline: str | None = None
+    description: str | None = None
+    instruction: str | None = None
+    effective: datetime | None = None
+    ends: datetime | None = None
+    sender: str | None = None
+
+
+class CurrentWeatherRequest(StrictModel):
+    location: LocationContext
+
+
+class CurrentWeatherResponse(StrictModel):
+    location: LocationContext
+    current: CurrentConditions | None = None
+    notes: list[str] = Field(default_factory=list)
+    citations: list[CitationBundle] = Field(default_factory=list)
+
+
+class ForecastRequest(StrictModel):
+    location: LocationContext
+    hourly: bool = False
+    periods: int = Field(default=6, ge=1, le=14)
+
+
+class ForecastResponse(StrictModel):
+    location: LocationContext
+    hourly: bool
+    forecast: list[ForecastPeriod] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    citations: list[CitationBundle] = Field(default_factory=list)
+
+
+class AlertsRequest(StrictModel):
+    location: LocationContext
+
+
+class AlertsResponse(StrictModel):
+    location: LocationContext
+    alerts: list[AlertSummary] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    citations: list[CitationBundle] = Field(default_factory=list)
+
+
+class WeatherAnalysisRequest(StrictModel):
+    location: LocationContext
+    prompt: str = Field(min_length=1, max_length=4000)
+    includeForecast: bool = True
+    includeHourlyForecast: bool = False
+    includeAlerts: bool = True
+    forecastPeriods: int = Field(default=6, ge=1, le=14)
+
+
+class WeatherAnalysisResponse(StrictModel):
+    location: LocationContext
+    summary: list[str] = Field(default_factory=list)
+    uncertaintyNotes: list[str] = Field(default_factory=list)
+    normalizedProducts: list[str] = Field(default_factory=list)
+    current: CurrentConditions | None = None
+    forecast: list[ForecastPeriod] = Field(default_factory=list)
+    alerts: list[AlertSummary] = Field(default_factory=list)
+    citations: list[CitationBundle] = Field(default_factory=list)
+
+
+class ChartPoint(StrictModel):
+    label: str
+    value: float
+
+
+class ArtifactRequest(StrictModel):
+    artifactType: Literal["meteogram", "research-report"]
+    prompt: str = Field(min_length=1, max_length=4000)
+    location: LocationContext | None = None
+    locationQuery: str | None = None
+    chartPoints: list[ChartPoint] = Field(default_factory=list)
+    sections: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_location(self) -> "ArtifactRequest":
+        if not self.location and not self.locationQuery:
+            raise ValueError("location or locationQuery is required")
+
+        return self
+
+    def display_location(self) -> str:
+        if self.locationQuery:
+            return self.locationQuery
+
+        if self.location:
+            return self.location.display_name()
+
+        return "Unknown location"
+
+
+class ArtifactResponse(StrictModel):
+    artifactId: str
+    artifactType: str
+    title: str
+    href: str
+    mimeType: str
+    createdAt: datetime
+
+
+class ErrorResponse(StrictModel):
+    code: str
+    message: str
+
+
+class HealthResponse(StrictModel):
+    ok: bool = True
+    service: str = "raincheck-weather"
+    artifactTypes: list[str] = Field(
+        default_factory=lambda: ["meteogram", "research-report"]
+    )
+    implementedProducts: list[str] = Field(
+        default_factory=lambda: [
+            "nws-forecast",
+            "nws-hourly-forecast",
+            "nws-observation",
+            "nws-alerts",
+            "artifact-meteogram",
+            "artifact-research-report",
+        ]
+    )

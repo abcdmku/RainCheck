@@ -1,0 +1,41 @@
+{
+  "name": "raincheck",
+  "private": true,
+  "packageManager": "pnpm@10.31.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node --env-file=.env ./scripts/dev.mjs",
+    "dev:api": "pnpm --filter @raincheck/api dev",
+    "dev:web": "pnpm --filter @raincheck/web dev",
+    "dev:desktop": "pnpm --filter @raincheck/desktop dev",
+    "dev:mobile": "pnpm --filter @raincheck/mobile dev",
+    "dev:weather": "node --env-file=.env ./scripts/run-weather-dev.mjs",
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "format": "pnpm -r --if-present format",
+    "test": "node ./scripts/test-all.mjs",
+    "test:e2e": "pnpm --filter @raincheck/web test:e2e",
+    "test:weather": "node scripts/run-weather-tests.mjs",
+    "setup:weather": "node scripts/install-weather-deps.mjs",
+    "db:generate": "pnpm --filter @raincheck/api db:generate",
+    "db:migrate": "pnpm --filter @raincheck/api db:migrate"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.5",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "electron",
+      "esbuild",
+      "lightningcss",
+      "protobufjs"
+    ]
+  }
+}

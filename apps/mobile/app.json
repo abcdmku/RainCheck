@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "RainCheck",
+    "slug": "raincheck",
+    "scheme": "raincheck",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
