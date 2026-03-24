@@ -56,14 +56,9 @@ export function SettingsPanel({
     >
       <div aria-modal="true" className="settings-panel" role="dialog">
         <div className="settings-header">
-          <div>
-            <p className="sidebar-brand">Settings</p>
-            <p className="sidebar-caption">
-              Theme, units, provider defaults, and BYOK.
-            </p>
-          </div>
+          <p className="sidebar-brand">Settings</p>
           <button className="ghost-icon-button" onClick={onClose} type="button">
-            <X size={18} />
+            <X size={16} />
           </button>
         </div>
 
@@ -102,7 +97,7 @@ export function SettingsPanel({
           </label>
 
           <label className="settings-field is-wide">
-            <span>Default location label</span>
+            <span>Default location</span>
             <input
               value={draft.defaultLocationLabel ?? ''}
               onChange={(event) =>
@@ -117,7 +112,7 @@ export function SettingsPanel({
 
         <div className="settings-section">
           <div className="tool-card-header">
-            <p>Bring your own key</p>
+            <p>API keys</p>
           </div>
           <div className="forecast-stack">
             {providerRows.map((providerId) => {
@@ -129,7 +124,7 @@ export function SettingsPanel({
                   <div>
                     <strong>{providerId}</strong>
                     <span>
-                      {byokState?.configured ? 'Configured' : 'Not configured'}
+                      {byokState?.configured ? 'Active' : ''}
                     </span>
                   </div>
                   <input
@@ -167,14 +162,14 @@ export function SettingsPanel({
 
         <div className="settings-actions">
           <button className="ghost-button" onClick={onClose} type="button">
-            Close
+            Cancel
           </button>
           <button
             className="primary-button"
             onClick={() => onSave(draft)}
             type="button"
           >
-            Save settings
+            Save
           </button>
         </div>
       </div>

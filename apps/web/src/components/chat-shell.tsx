@@ -109,15 +109,9 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     [availableModelOptions, selectedRoute.model, selectedRoute.provider],
   )
 
-  const modelPickerNote = selectedModelOption?.description
-    ? selectedModelOption.description
-    : settingsQuery.isLoading
-      ? 'Loading model options.'
-      : 'Add an AI provider key in Settings to start chatting.'
-
   const modelPickerPlaceholder = settingsQuery.isLoading
-    ? 'Loading models...'
-    : 'Add a provider key'
+    ? 'Loading...'
+    : 'No provider'
 
   const chat = useRainCheckChat({
     conversationId: conversationId ?? 'draft',
@@ -401,7 +395,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
         <ConversationSidebar
           collapsed={sidebarCollapsed}
           conversations={conversationsQuery.data ?? ([] as Array<Conversation>)}
-          currentConversationId={conversationId}
+
           onCreateConversation={() => void createAndNavigateWithDraft()}
           onOpenSettings={() => setSettingsOpen(true)}
           onToggle={() => setSidebarCollapsed((current) => !current)}
@@ -410,58 +404,48 @@ export function ChatShell({ conversationId }: ChatShellProps) {
         <main className="thread-shell">
           <header className="thread-header">
             <div className="thread-header-title">
-              <div>
-                <h1>{currentConversation?.title ?? 'New thread'}</h1>
+              <h1>{currentConversation?.title ?? 'New thread'}</h1>
+              {settingsQuery.data?.defaultLocationLabel ? (
                 <p>
-                  {settingsQuery.data?.defaultLocationLabel ? (
-                    <>
-                      <MapPin size={12} />
-                      {settingsQuery.data.defaultLocationLabel}
-                    </>
-                  ) : (
-                    'Ask about a place, address, or lat/lon.'
-                  )}
+                  <MapPin size={12} />
+                  {settingsQuery.data.defaultLocationLabel}
                 </p>
-              </div>
+              ) : null}
             </div>
 
             <div className="thread-controls">
-              <label className="thread-model-picker">
-                <span className="thread-control-label">Model</span>
-                <select
-                  aria-label="Chat model"
-                  disabled={availableModelOptions.length === 0}
-                  value={selectedModelOption?.id ?? ''}
-                  onChange={(event) => {
-                    const nextOption = availableModelOptions.find(
-                      (option) => option.id === event.target.value,
-                    )
+              <select
+                aria-label="Chat model"
+                disabled={availableModelOptions.length === 0}
+                value={selectedModelOption?.id ?? ''}
+                onChange={(event) => {
+                  const nextOption = availableModelOptions.find(
+                    (option) => option.id === event.target.value,
+                  )
 
-                    if (!nextOption) {
-                      return
-                    }
+                  if (!nextOption) {
+                    return
+                  }
 
-                    setSelectedRoute({
-                      provider: nextOption.provider,
-                      model: nextOption.model,
-                    })
-                  }}
-                >
-                  {availableModelOptions.length === 0 ? (
-                    <option value="">{modelPickerPlaceholder}</option>
-                  ) : (
-                    availableModelOptions.map((option) => (
-                      <option
-                        key={`${option.provider}:${option.model}`}
-                        value={option.id}
-                      >
-                        {option.label}
-                      </option>
-                    ))
-                  )}
-                </select>
-                <span className="thread-control-note">{modelPickerNote}</span>
-              </label>
+                  setSelectedRoute({
+                    provider: nextOption.provider,
+                    model: nextOption.model,
+                  })
+                }}
+              >
+                {availableModelOptions.length === 0 ? (
+                  <option value="">{modelPickerPlaceholder}</option>
+                ) : (
+                  availableModelOptions.map((option) => (
+                    <option
+                      key={`${option.provider}:${option.model}`}
+                      value={option.id}
+                    >
+                      {option.label}
+                    </option>
+                  ))
+                )}
+              </select>
               <button
                 aria-label="Open settings"
                 className="ghost-icon-button"
@@ -477,7 +461,6 @@ export function ChatShell({ conversationId }: ChatShellProps) {
             {messages.length === 0 ? (
               <div className="empty-thread">
                 <p className="sidebar-brand">RainCheck</p>
-                <p className="empty-thread-copy">Ask about weather anywhere.</p>
               </div>
             ) : (
               messages.map((message: any, index: number) => (

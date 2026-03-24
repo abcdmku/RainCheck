@@ -8,9 +8,17 @@ import viteReact from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { nitro } from 'nitro/vite'
 
+const internalApiBaseUrl =
+  process.env.RAINCHECK_INTERNAL_API_BASE_URL ??
+  process.env.API_BASE_URL ??
+  'http://localhost:3001'
+
+const publicApiBaseUrl =
+  process.env.RAINCHECK_PUBLIC_API_BASE_URL ?? process.env.API_BASE_URL ?? ''
+
 const config = defineConfig({
   define: {
-    __RAINCHECK_API_BASE_URL__: JSON.stringify(process.env.API_BASE_URL ?? ''),
+    __RAINCHECK_API_BASE_URL__: JSON.stringify(publicApiBaseUrl),
   },
   plugins: [
     devtools(),
@@ -23,7 +31,7 @@ const config = defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: process.env.API_BASE_URL ?? 'http://localhost:3001',
+        target: internalApiBaseUrl,
         changeOrigin: true,
       },
     },

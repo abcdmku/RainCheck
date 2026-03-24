@@ -12,20 +12,20 @@ function normalizeBaseUrl(value?: string | null) {
 }
 
 export function getApiBaseUrl() {
-  const injectedBaseUrl =
+  const publicBaseUrl =
     typeof __RAINCHECK_API_BASE_URL__ === 'string'
       ? normalizeBaseUrl(__RAINCHECK_API_BASE_URL__)
       : ''
 
-  if (injectedBaseUrl) {
-    return injectedBaseUrl
-  }
-
   if (typeof window !== 'undefined') {
-    return ''
+    return publicBaseUrl
   }
 
-  return normalizeBaseUrl(process.env.API_BASE_URL ?? 'http://localhost:3001')
+  const serverBaseUrl =
+    process.env.RAINCHECK_INTERNAL_API_BASE_URL ??
+    (publicBaseUrl || process.env.API_BASE_URL || 'http://localhost:3001')
+
+  return normalizeBaseUrl(serverBaseUrl)
 }
 
 export function resolveApiUrl(path: string) {

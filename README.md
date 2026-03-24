@@ -12,6 +12,16 @@ The repo is organized as a small pnpm monorepo:
 - `packages/sdk` contains the shared client for the product API.
 - `services/weather` contains the FastAPI weather-analysis service.
 
+## Docker Compose
+
+1. Copy `.env.example` to `.env` and provide at least one model provider key.
+2. Run `docker compose up --build`.
+3. Open `http://localhost:3000`.
+
+The compose stack starts the primary chat workflow only: the web app, Node API, and Python weather service. SQLite data and generated artifacts are stored in the `raincheck-artifacts` Docker volume.
+Only the UI entrypoint is published on the host. The API and weather services stay on the internal Docker network behind an internal reverse proxy.
+If port `3000` is already in use, set `RAINCHECK_WEB_PORT` before starting Compose.
+
 ## Local setup
 
 1. Install Node dependencies with `pnpm install`.

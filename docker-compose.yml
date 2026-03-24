@@ -1,0 +1,100 @@
+services:
+  weather:
+    build:
+      context: .
+      target: weather
+    env_file:
+      - .env
+    environment:
+      ARTIFACTS_DIR: /workspace/artifacts/generated
+      WEATHER_ARTIFACT_BASE_PATH: /api/artifacts
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - raincheck-artifacts:/workspace/artifacts
+
+  api:
+    build:
+      context: .
+      target: api
+    depends_on:
+      weather:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      PORT: 3001
+      RAINCHECK_APP_URL: http://localhost:${RAINCHECK_WEB_PORT:-3000}
+      API_BASE_URL: http://localhost:${RAINCHECK_WEB_PORT:-3000}
+      WEATHER_SERVICE_URL: http://weather:8000
+      DB_URL: /workspace/artifacts/raincheck.db
+      ARTIFACTS_DIR: /workspace/artifacts/generated
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - raincheck-artifacts:/workspace/artifacts
+
+  web:
+    build:
+      context: .
+      target: web
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_BASE_URL: http://api:3001
+      RAINCHECK_INTERNAL_API_BASE_URL: http://api:3001
+      RAINCHECK_PUBLIC_API_BASE_URL: ""
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  ui:
+    image: nginx:1.27-alpine
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    ports:
+      - "${RAINCHECK_WEB_PORT:-3000}:3000"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+
+volumes:
+  raincheck-artifacts:

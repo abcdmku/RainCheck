@@ -74,8 +74,10 @@ function AlertsCard({ output }: { output: Array<any> }) {
       <div className="forecast-stack">
         {output.map((alert) => (
           <div className="alert-row" key={alert.id}>
-            <strong>{alert.headline}</strong>
-            <span>{alert.area}</span>
+            <div>
+              <strong>{alert.headline}</strong>
+              <span>{alert.area}</span>
+            </div>
           </div>
         ))}
       </div>
@@ -86,10 +88,6 @@ function AlertsCard({ output }: { output: Array<any> }) {
 function SourcesCard({ output }: { output: any }) {
   return (
     <div className="source-card">
-      <div className="tool-card-header">
-        <p>Sources</p>
-        <span>{output.citations?.length ?? 0}</span>
-      </div>
       <div className="source-chip-wrap">
         {output.citations?.map((citation: any) => (
           <a
@@ -204,6 +202,10 @@ export function MessageView({
   }) => void
 }) {
   const text = getMessageText(message as any)
+  const toolParts = message.parts.filter(
+    (part): part is any => part.type === 'tool-call',
+  )
+  const hasTools = toolParts.length > 0
 
   return (
     <article
@@ -221,15 +223,17 @@ export function MessageView({
             <Streamdown>{text}</Streamdown>
           </div>
         ) : null}
-        {message.parts
-          .filter((part): part is any => part.type === 'tool-call')
-          .map((part) => (
-            <ToolOutput
-              key={part.id}
-              onOpenArtifact={onOpenArtifact}
-              part={part}
-            />
-          ))}
+        {hasTools ? (
+          <div className="tool-section">
+            {toolParts.map((part) => (
+              <ToolOutput
+                key={part.id}
+                onOpenArtifact={onOpenArtifact}
+                part={part}
+              />
+            ))}
+          </div>
+        ) : null}
         <div className="message-actions">
           <button
             aria-label="Copy message"

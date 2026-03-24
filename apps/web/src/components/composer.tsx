@@ -22,7 +22,7 @@ export function Composer({
       {editingLabel ? (
         <div className="composer-banner">
           <div>
-            <p className="composer-banner-label">Editing message</p>
+            <p className="composer-banner-label">Editing</p>
             <p className="composer-banner-value">{editingLabel}</p>
           </div>
           <button className="ghost-button" onClick={onCancelEdit} type="button">
@@ -41,14 +41,12 @@ export function Composer({
               onSubmit()
             }
           }}
-          placeholder="Ask about current weather, storm timing, radar context, or a deeper brief..."
+          placeholder="Ask about weather anywhere..."
           rows={1}
           value={value}
         />
         <div className="composer-actions">
-          <p className="composer-meta">
-            Enter to send. Shift+Enter for a new line.
-          </p>
+          <span />
           <button
             className="primary-button"
             disabled={isLoading || value.trim().length === 0}
@@ -56,9 +54,9 @@ export function Composer({
             type="button"
           >
             {isLoading ? (
-              <LoaderCircle className="spin" size={16} />
+              <LoaderCircle className="spin" size={15} />
             ) : (
-              <SendHorizontal size={16} />
+              <SendHorizontal size={15} />
             )}
             Send
           </button>
