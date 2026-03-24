@@ -7,8 +7,12 @@ import {
 } from '@raincheck/contracts'
 import type { FastifyInstance } from 'fastify'
 
-import { fetchJson, fetchText } from '../lib/http'
 import { geocodeQuery } from './geocode'
+import {
+  cacheKey,
+  fetchWeatherJson,
+  fetchWeatherText,
+} from './runtime'
 
 type PointsResponse = {
   properties: {
@@ -106,19 +110,42 @@ export async function getCurrentConditions(
 ) {
   const location = await geocodeQuery(app, locationQuery)
   const pointsUrl = `https://api.weather.gov/points/${location.latitude},${location.longitude}`
-  const points = await fetchJson<PointsResponse>(app.raincheckEnv, pointsUrl)
-  const stations = await fetchJson<ObservationStationsResponse>(
-    app.raincheckEnv,
-    points.properties.observationStations,
-  )
-  const stationId = stations.features[0]?.properties.stationIdentifier
+  const points = await fetchWeatherJson<PointsResponse>(app, {
+    sourceId: 'weather-gov',
+    productId: 'points',
+    label: 'NWS point lookup',
+    url: pointsUrl,
+    cacheKey: cacheKey('weather-gov', 'points', location.latitude, location.longitude),
+    ttlMs: 15 * 60 * 1000,
+  })
+  const stations = await fetchWeatherJson<ObservationStationsResponse>(app, {
+    sourceId: 'weather-gov',
+    productId: 'observation-stations',
+    label: 'NWS observation stations',
+    url: points.value.properties.observationStations,
+    cacheKey: cacheKey(
+      'weather-gov',
+      'observation-stations',
+      location.latitude,
+      location.longitude,
+    ),
+    ttlMs: 15 * 60 * 1000,
+  })
+  const stationId = stations.value.features[0]?.properties.stationIdentifier
   const latestObservationUrl = `https://api.weather.gov/stations/${stationId}/observations/latest`
-  const latestObservation = await fetchJson<LatestObservationResponse>(
-    app.raincheckEnv,
-    latestObservationUrl,
+  const latestObservation = await fetchWeatherJson<LatestObservationResponse>(
+    app,
+    {
+      sourceId: 'weather-gov',
+      productId: 'latest-observation',
+      label: 'NWS latest observation',
+      url: latestObservationUrl,
+      cacheKey: cacheKey('weather-gov', 'latest-observation', stationId),
+      ttlMs: 10 * 60 * 1000,
+    },
   )
 
-  const temperatureC = latestObservation.properties.temperature.value
+  const temperatureC = latestObservation.value.properties.temperature.value
   const temperatureF =
     temperatureC == null ? null : Math.round((temperatureC * 9) / 5 + 32)
 
@@ -129,14 +156,14 @@ export async function getCurrentConditions(
       unit: 'F',
     },
     wind: {
-      speed: metersPerSecondToMph(latestObservation.properties.windSpeed.value),
+      speed: metersPerSecondToMph(latestObservation.value.properties.windSpeed.value),
       direction: windDirectionToCardinal(
-        latestObservation.properties.windDirection.value,
+        latestObservation.value.properties.windDirection.value,
       ),
     },
-    humidityPercent: latestObservation.properties.relativeHumidity.value,
-    textDescription: latestObservation.properties.textDescription,
-    observedAt: latestObservation.properties.timestamp,
+    humidityPercent: latestObservation.value.properties.relativeHumidity.value,
+    textDescription: latestObservation.value.properties.textDescription,
+    observedAt: latestObservation.value.properties.timestamp,
     source: makeCitation(
       'weather-gov',
       'latest-observation',
@@ -153,20 +180,36 @@ export async function getForecast(
 ) {
   const location = await geocodeQuery(app, locationQuery)
   const pointsUrl = `https://api.weather.gov/points/${location.latitude},${location.longitude}`
-  const points = await fetchJson<PointsResponse>(app.raincheckEnv, pointsUrl)
+  const points = await fetchWeatherJson<PointsResponse>(app, {
+    sourceId: 'weather-gov',
+    productId: 'points',
+    label: 'NWS point lookup',
+    url: pointsUrl,
+    cacheKey: cacheKey('weather-gov', 'points', location.latitude, location.longitude),
+    ttlMs: 15 * 60 * 1000,
+  })
   const forecastUrl =
     horizon === 'extended'
-      ? points.properties.forecast
-      : points.properties.forecastHourly
-  const forecast = await fetchJson<ForecastResponse>(
-    app.raincheckEnv,
-    forecastUrl,
-  )
+      ? points.value.properties.forecast
+      : points.value.properties.forecastHourly
+  const forecast = await fetchWeatherJson<ForecastResponse>(app, {
+    sourceId: 'weather-gov',
+    productId: horizon === 'extended' ? 'forecast' : 'forecast-hourly',
+    label: horizon === 'extended' ? 'NWS forecast' : 'NWS hourly forecast',
+    url: forecastUrl,
+    cacheKey: cacheKey(
+      'weather-gov',
+      horizon === 'extended' ? 'forecast' : 'forecast-hourly',
+      location.latitude,
+      location.longitude,
+    ),
+    ttlMs: 15 * 60 * 1000,
+  })
 
   return forecastSummarySchema.parse({
     location,
-    generatedAt: forecast.properties.generatedAt,
-    periods: forecast.properties.periods
+    generatedAt: forecast.value.properties.generatedAt,
+    periods: forecast.value.properties.periods
       .slice(0, horizon === 'extended' ? 10 : 8)
       .map((period) => ({
         name: period.name,
@@ -190,9 +233,16 @@ export async function getForecast(
 export async function getAlerts(app: FastifyInstance, locationQuery: string) {
   const location = await geocodeQuery(app, locationQuery)
   const alertsUrl = `https://api.weather.gov/alerts/active?point=${location.latitude},${location.longitude}`
-  const alerts = await fetchJson<AlertsResponse>(app.raincheckEnv, alertsUrl)
+  const alerts = await fetchWeatherJson<AlertsResponse>(app, {
+    sourceId: 'weather-gov',
+    productId: 'alerts',
+    label: 'NWS active alerts',
+    url: alertsUrl,
+    cacheKey: cacheKey('weather-gov', 'alerts', location.latitude, location.longitude),
+    ttlMs: 5 * 60 * 1000,
+  })
 
-  return alerts.features.map((feature) =>
+  return alerts.value.features.map((feature) =>
     alertSummarySchema.parse({
       id: feature.id,
       headline: feature.properties.headline,
@@ -215,9 +265,14 @@ export async function getSevereSummary(
 ) {
   const alerts = await getAlerts(app, locationQuery)
   const outlookUrl = 'https://www.spc.noaa.gov/products/outlook/'
-  const outlookText = await fetchText(app.raincheckEnv, outlookUrl).catch(
-    () => '',
-  )
+  const outlookText = await fetchWeatherText(app, {
+    sourceId: 'spc',
+    productId: 'outlook',
+    label: 'SPC outlooks',
+    url: outlookUrl,
+    cacheKey: cacheKey('spc', 'outlook'),
+    ttlMs: 10 * 60 * 1000,
+  }).catch(() => ({ value: '' } as { value: string }))
 
   return severeSummarySchema.parse({
     area: locationQuery,
@@ -225,9 +280,9 @@ export async function getSevereSummary(
       alerts.length > 0
         ? `Active alerts are present. ${alerts[0]?.headline ?? ''}`.trim()
         : 'No active local alerts were found. SPC outlook context is available for broader severe-weather discussion.',
-    outlookCategory: outlookText.includes('Moderate')
+    outlookCategory: outlookText.value.includes('Moderate')
       ? 'Moderate'
-      : outlookText.includes('Slight')
+      : outlookText.value.includes('Slight')
         ? 'Slight'
         : null,
     watchContext:

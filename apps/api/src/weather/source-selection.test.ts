@@ -13,36 +13,12 @@ describe('chooseSourceManifests', () => {
     })
 
     expect(sources[0]?.sourceId).toBe('weather-gov')
+    expect(sources.map((source) => source.sourceId)).toContain(
+      'open-meteo-geocoding',
+    )
   })
 
-  it('selects radar and severe-weather families for radar analysis', () => {
-    const sources = chooseSourceManifests({
-      taskClass: 'research',
-      intent: 'radar-analysis',
-      timeHorizonHours: 6,
-      locationRequired: true,
-      needsArtifact: true,
-    })
-
-    expect(sources.some((source) => source.sourceId === 'nexrad')).toBe(true)
-    expect(sources.some((source) => source.sourceId === 'spc')).toBe(true)
-  })
-
-  it('selects compact model guidance for model comparison', () => {
-    const sources = chooseSourceManifests({
-      taskClass: 'research',
-      intent: 'model-comparison',
-      timeHorizonHours: 48,
-      locationRequired: true,
-      needsArtifact: true,
-    })
-
-    expect(sources.map((source) => source.sourceId)).toContain('gfs')
-    expect(sources.map((source) => source.sourceId)).toContain('gefs')
-    expect(sources[0]?.sourceId).toBe('weather-gov')
-  })
-
-  it('selects hydrology context for flooding questions', () => {
+  it('routes hydrology manifests through NWPS first', () => {
     const sources = chooseSourceManifests({
       taskClass: 'research',
       intent: 'hydrology',
@@ -51,7 +27,39 @@ describe('chooseSourceManifests', () => {
       needsArtifact: true,
     })
 
-    expect(sources.map((source) => source.sourceId)).toContain('nwps')
-    expect(sources.map((source) => source.sourceId)).toContain('wpc')
+    expect(sources[0]?.sourceId).toBe('nwps')
+    expect(sources.some((source) => source.sourceId === 'mrms')).toBe(true)
+    expect(sources.some((source) => source.sourceId === 'wpc')).toBe(true)
+  })
+
+  it('routes tropical manifests through NHC', () => {
+    const sources = chooseSourceManifests({
+      taskClass: 'chat',
+      intent: 'tropical',
+      timeHorizonHours: 48,
+      locationRequired: true,
+      needsArtifact: false,
+    })
+
+    expect(sources[0]?.sourceId).toBe('nhc')
+    expect(sources.some((source) => source.sourceId === 'weather-gov')).toBe(
+      true,
+    )
+  })
+
+  it('includes model families for model-comparison workflows', () => {
+    const sources = chooseSourceManifests({
+      taskClass: 'research',
+      intent: 'model-comparison',
+      timeHorizonHours: 48,
+      locationRequired: true,
+      needsArtifact: true,
+    })
+
+    expect(sources.some((source) => source.sourceId === 'gfs')).toBe(true)
+    expect(sources.some((source) => source.sourceId === 'gefs')).toBe(true)
+    expect(
+      sources.some((source) => source.sourceId === 'ecmwf-open-data'),
+    ).toBe(true)
   })
 })

@@ -54,7 +54,9 @@ Research flows stay inside the thread. The app does not ship a dashboard homepag
 ## Notes
 
 - The backend works with one provider configured and falls back across OpenAI, Anthropic, Gemini, or OpenRouter when multiple are available.
-- Weather data starts with public sources centered on NWS and aviation weather products, then expands into research artifacts through the Python service.
+- The live MVP currently uses public sources centered on NWS, U.S. Census geocoding, Open-Meteo geocoding fallback, and Aviation Weather Center products.
+- Radar, satellite, hydrology, and model-guidance families remain scaffolded until their fetchers are wired into the runtime.
 - Artifacts are stored on the local filesystem in development.
 
 More detail lives in [docs/architecture.md](docs/architecture.md).
+Current capability and access status lives in [docs/weather-capability-matrix.md](docs/weather-capability-matrix.md).

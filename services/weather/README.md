@@ -18,14 +18,24 @@ This service is intentionally narrow:
 - `POST /weather/analysis`
 - `POST /artifacts/meteogram`
 - `POST /artifacts/research-report`
+- `POST /artifacts/brief-report`
+- `POST /artifacts/radar-loop`
+- `POST /artifacts/satellite-loop`
+- `POST /artifacts/model-comparison-panel`
+- `POST /artifacts/hydrograph`
+- `POST /artifacts/skewt`
+- `POST /artifacts/rainfall-chart`
+- `POST /artifacts/snowfall-chart`
 
 ## Node backend contract
 
-The preferred integration pattern is:
+The service supports this backend-to-backend contract:
 
 1. Node resolves user input to a location and sends `latitude` / `longitude`
 2. Python returns normalized NWS-focused weather data plus citations
 3. Node decides how to present the response inside the chat thread
+
+Today, the main chat runtime still fetches current conditions, forecast, alerts, aviation, and geocoding directly in `apps/api`. The Python service is currently used most heavily for artifact generation, service health, direct tests, and future expansion points.
 
 Example request:
 
@@ -56,7 +66,10 @@ Response highlights:
 `GET /catalog` returns:
 
 - implemented NWS products used in the MVP
+- the internal RainCheck artifact generator and its implemented artifact products
 - planned source/product stubs for radar, satellite, MRMS, model guidance, and hydrology
+
+The catalog is intentionally conservative: only the NWS weather endpoints and the server-generated artifact paths are considered implemented in this service today.
 
 Heavy scientific packages remain optional. The service can run the current MVP without them and keeps clear extension points for later radar, satellite, and model artifact work.
 

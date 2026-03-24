@@ -1,6 +1,11 @@
 import { z } from 'zod'
 
-import { providerIdSchema, taskClassSchema, unitSystemSchema } from './base'
+import {
+  providerIdSchema,
+  taskClassSchema,
+  unitSystemSchema,
+  weatherWorkflowSchema,
+} from './base'
 
 export const unitSchema = unitSystemSchema
 
@@ -113,17 +118,7 @@ export const routeDecisionSchema = z.object({
 
 export const requestClassificationSchema = z.object({
   taskClass: taskClassSchema,
-  intent: z.enum([
-    'current-conditions',
-    'forecast',
-    'alerts',
-    'radar-analysis',
-    'research-brief',
-    'aviation',
-    'hydrology',
-    'model-comparison',
-    'general-weather',
-  ]),
+  intent: weatherWorkflowSchema,
   timeHorizonHours: z.number().int().min(0).max(720),
   locationRequired: z.boolean(),
   needsArtifact: z.boolean(),

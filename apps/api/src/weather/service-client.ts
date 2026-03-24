@@ -7,6 +7,24 @@ import { resolveWorkspacePath } from '../lib/paths'
 import { nowIso } from '../lib/time'
 import { getForecast } from './nws'
 
+type BaseArtifactType =
+  | 'meteogram'
+  | 'research-report'
+  | 'radar-loop'
+  | 'satellite-loop'
+  | 'hydrograph'
+  | 'skewt'
+  | 'rainfall-chart'
+  | 'snowfall-chart'
+  | 'model-comparison-panel'
+  | 'brief-report'
+
+type ArtifactOptions = {
+  artifactType: BaseArtifactType
+  locationQuery: string
+  prompt: string
+}
+
 function resolveArtifactsDir(app: FastifyInstance) {
   return resolveWorkspacePath(app.raincheckEnv.ARTIFACTS_DIR)
 }
@@ -27,6 +45,15 @@ async function writeArtifactFile(
   return filePath
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 export async function checkWeatherService(app: FastifyInstance) {
   try {
     const response = await fetch(
@@ -38,14 +65,301 @@ export async function checkWeatherService(app: FastifyInstance) {
   }
 }
 
+async function loadMeteogramForecast(
+  app: FastifyInstance,
+  locationQuery: string,
+) {
+  return forecastSummarySchema.parse(
+    await getForecast(app, locationQuery, 'short'),
+  )
+}
+
+function buildMeteogramChartPoints(
+  forecast: Awaited<ReturnType<typeof loadMeteogramForecast>>,
+) {
+  return forecast.periods.slice(0, 6).map((period) => ({
+    label: period.name,
+    value: period.temperature,
+  }))
+}
+
+function buildMeteogramPath(
+  forecast: Awaited<ReturnType<typeof loadMeteogramForecast>>,
+) {
+  return buildMeteogramChartPoints(forecast)
+    .map((point, index) => {
+      const x = 40 + index * 100
+      const y = 180 - (point.value - 30) * 2
+      return `${index === 0 ? 'M' : 'L'}${x},${y}`
+    })
+    .join(' ')
+}
+
+function buildChartSvg(
+  title: string,
+  subtitle: string,
+  footer: string,
+  points: Array<{ label: string; value: number }>,
+  accent: string,
+) {
+  const minValue = Math.min(...points.map((point) => point.value))
+  const maxValue = Math.max(...points.map((point) => point.value))
+  const span = Math.max(maxValue - minValue, 1)
+  const pathData = points
+    .map((point, index) => {
+      const x = 60 + index * 90
+      const y = 210 - ((point.value - minValue) / span) * 120
+      return `${index === 0 ? 'M' : 'L'}${x},${y}`
+    })
+    .join(' ')
+
+  return `<!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>${escapeHtml(title)}</title>
+      <style>
+        body { margin: 0; background: #091419; color: #f5f7f8; font-family: ui-sans-serif, system-ui, sans-serif; }
+        main { max-width: 820px; margin: 0 auto; padding: 28px; }
+        .panel { background: #0d1519; border: 1px solid #19303a; border-radius: 18px; padding: 20px; }
+        .eyebrow { color: ${accent}; text-transform: uppercase; letter-spacing: 0.14em; font-size: 12px; }
+        h1 { margin: 8px 0 4px; font-size: 28px; }
+        p { color: #9ab2b6; line-height: 1.6; }
+      </style>
+    </head>
+    <body>
+      <main>
+        <section class="panel">
+          <div class="eyebrow">${escapeHtml(title)}</div>
+          <h1>${escapeHtml(title)}</h1>
+          <p>${escapeHtml(subtitle)}</p>
+          <svg xmlns="http://www.w3.org/2000/svg" width="720" height="260" viewBox="0 0 720 260">
+            <rect width="720" height="260" rx="18" fill="#0b1317" />
+            <path d="${pathData}" fill="none" stroke="${accent}" stroke-width="5" stroke-linecap="round" />
+            ${points
+              .map((point, index) => {
+                const x = 60 + index * 90
+                const y = 210 - ((point.value - minValue) / span) * 120
+                return `<circle cx="${x}" cy="${y}" r="4" fill="${accent}" />`
+              })
+              .join('')}
+            ${points
+              .map((point, index) => {
+                const x = 36 + index * 90
+                return `<text x="${x}" y="240" fill="#9ab2b6" font-size="11" font-family="sans-serif">${escapeHtml(point.label)}</text>`
+              })
+              .join('')}
+          </svg>
+          <p>${escapeHtml(footer)}</p>
+        </section>
+      </main>
+    </body>
+  </html>`
+}
+
+function buildInfoSvg(
+  title: string,
+  subtitle: string,
+  lines: Array<string>,
+  accent: string,
+) {
+  const lineEls = lines
+    .slice(0, 5)
+    .map((line, index) => {
+      return `<text x="28" y="${118 + index * 24}" fill="#b9c9cb" font-family="sans-serif" font-size="14">${escapeHtml(line)}</text>`
+    })
+    .join('')
+
+  return `<!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>${escapeHtml(title)}</title>
+      <style>
+        body { margin: 0; background: #091419; color: #f5f7f8; font-family: ui-sans-serif, system-ui, sans-serif; }
+        main { max-width: 860px; margin: 0 auto; padding: 28px; }
+        .panel { background: #0d1519; border: 1px solid #19303a; border-radius: 18px; padding: 20px; }
+      </style>
+    </head>
+    <body>
+      <main>
+        <section class="panel">
+          <div style="color:${accent};text-transform:uppercase;letter-spacing:.14em;font-size:12px">${escapeHtml(title)}</div>
+          <h1 style="margin:8px 0 4px;font-size:28px">${escapeHtml(title)}</h1>
+          <p style="color:#9ab2b6;line-height:1.6">${escapeHtml(subtitle)}</p>
+          <svg xmlns="http://www.w3.org/2000/svg" width="800" height="240" viewBox="0 0 800 240">
+            <rect width="800" height="240" rx="18" fill="#0b1317" />
+            <path d="M40 56h720" stroke="${accent}" stroke-width="2" stroke-dasharray="6 6" />
+            ${lineEls}
+          </svg>
+        </section>
+      </main>
+    </body>
+  </html>`
+}
+
+function buildReportHtml(
+  title: string,
+  locationQuery: string,
+  prompt: string,
+  bullets: Array<string>,
+) {
+  return `<!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>${escapeHtml(title)}</title>
+      <style>
+        body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; background: #0b1317; color: #edf3f3; }
+        main { max-width: 760px; margin: 0 auto; padding: 48px 24px 72px; }
+        h1 { margin: 0 0 8px; font-size: 32px; }
+        p, li { color: #b9c9cb; line-height: 1.6; }
+        .eyebrow { text-transform: uppercase; letter-spacing: 0.14em; font-size: 12px; color: #78d7cb; }
+      </style>
+    </head>
+    <body>
+      <main>
+        <div class="eyebrow">${escapeHtml(title)}</div>
+        <h1>${escapeHtml(locationQuery)}</h1>
+        <p>Generated at ${nowIso()}</p>
+        <p>${escapeHtml(prompt)}</p>
+        <ul>
+          ${bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join('')}
+        </ul>
+      </main>
+    </body>
+  </html>`
+}
+
+function buildMeteogramFallback(app: FastifyInstance, forecast: Awaited<ReturnType<typeof loadMeteogramForecast>>) {
+  const points = buildMeteogramPath(forecast)
+  const artifactId = `meteogram-${Date.now()}.svg`
+  return writeArtifactFile(
+    app,
+    artifactId,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="680" height="240" viewBox="0 0 680 240">
+      <rect width="680" height="240" fill="#0d1519" rx="18"/>
+      <path d="${points}" fill="none" stroke="#6dd6cb" stroke-width="4"/>
+      <text x="28" y="36" fill="#f5f7f8" font-family="sans-serif" font-size="18">RainCheck Meteogram</text>
+      <text x="28" y="60" fill="#9ab2b6" font-family="sans-serif" font-size="12">${escapeHtml(forecast.location.name)}</text>
+    </svg>`,
+  ).then(() => ({
+    artifactId,
+    type: 'meteogram',
+    title: `Meteogram for ${forecast.location.name}`,
+    href: artifactHref(artifactId),
+    mimeType: 'image/svg+xml',
+  }))
+}
+
+function buildGenericChartFallback(
+  app: FastifyInstance,
+  artifactType: Exclude<BaseArtifactType, 'meteogram' | 'research-report' | 'model-comparison-panel' | 'brief-report' | 'radar-loop' | 'satellite-loop' | 'skewt'>,
+  locationQuery: string,
+  prompt: string,
+  forecast: Awaited<ReturnType<typeof loadMeteogramForecast>>,
+) {
+  const points = buildMeteogramChartPoints(forecast)
+  const palette: Record<string, string> = {
+    'rainfall-chart': '#63c8ff',
+    'snowfall-chart': '#d4e6ff',
+    hydrograph: '#7be0be',
+  }
+  const titleMap: Record<string, string> = {
+    'rainfall-chart': 'RainCheck Rainfall Chart',
+    'snowfall-chart': 'RainCheck Snowfall Chart',
+    hydrograph: 'RainCheck Hydrograph',
+  }
+  const artifactId = `${artifactType}-${Date.now()}.html`
+  return writeArtifactFile(
+    app,
+    artifactId,
+    buildChartSvg(
+      titleMap[artifactType],
+      `${locationQuery} | ${prompt}`,
+      'Placeholder chart until richer hydrologic and precipitation subsets are wired into the backend.',
+      points,
+      palette[artifactType],
+    ),
+  ).then(() => ({
+    artifactId,
+    type: artifactType,
+    title: `${titleMap[artifactType]} for ${locationQuery}`,
+    href: artifactHref(artifactId),
+    mimeType: 'text/html',
+  }))
+}
+
+function buildPanelFallback(
+  app: FastifyInstance,
+  artifactType: 'radar-loop' | 'satellite-loop' | 'skewt' | 'model-comparison-panel' | 'brief-report',
+  locationQuery: string,
+  prompt: string,
+) {
+  const titles: Record<typeof artifactType, string> = {
+    'radar-loop': 'RainCheck Radar Loop',
+    'satellite-loop': 'RainCheck Satellite Loop',
+    skewt: 'RainCheck Skew-T',
+    'model-comparison-panel': 'RainCheck Model Comparison',
+    'brief-report': 'RainCheck Brief Report',
+  }
+  const accent: Record<typeof artifactType, string> = {
+    'radar-loop': '#ff7a7a',
+    'satellite-loop': '#8ec9ff',
+    skewt: '#8fe0c7',
+    'model-comparison-panel': '#ffcc7a',
+    'brief-report': '#78d7cb',
+  }
+  const artifactId = `${artifactType}-${Date.now()}.html`
+  return writeArtifactFile(
+    app,
+    artifactId,
+    buildInfoSvg(
+      titles[artifactType],
+      `${locationQuery} | ${prompt}`,
+      [
+        'Structured radar, satellite, model, and sounding inputs are not yet decoded in this local fallback.',
+        'The Python weather service will replace this placeholder once richer artifact generation lands.',
+        'This file still gives the chat thread a durable, clickable artifact instead of failing silently.',
+      ],
+      accent[artifactType],
+    ),
+  ).then(() => ({
+    artifactId,
+    type: artifactType,
+    title: `${titles[artifactType]} for ${locationQuery}`,
+    href: artifactHref(artifactId),
+    mimeType: 'text/html',
+  }))
+}
+
 export async function generateArtifact(
   app: FastifyInstance,
-  options: {
-    artifactType: 'meteogram' | 'research-report'
-    locationQuery: string
-    prompt: string
-  },
+  options: ArtifactOptions,
 ) {
+  const meteogramForecast =
+    options.artifactType === 'meteogram' ||
+    options.artifactType === 'rainfall-chart' ||
+    options.artifactType === 'snowfall-chart' ||
+    options.artifactType === 'hydrograph'
+      ? await loadMeteogramForecast(app, options.locationQuery)
+      : null
+  const requestBody =
+    options.artifactType === 'meteogram' && meteogramForecast
+      ? {
+          artifactType: 'meteogram' as const,
+          prompt: options.prompt,
+          location: {
+            latitude: meteogramForecast.location.latitude,
+            longitude: meteogramForecast.location.longitude,
+            name: meteogramForecast.location.name,
+          },
+          chartPoints: buildMeteogramChartPoints(meteogramForecast),
+        }
+      : options
   const serviceUp = await checkWeatherService(app)
   if (serviceUp) {
     try {
@@ -56,17 +370,22 @@ export async function generateArtifact(
           headers: {
             'content-type': 'application/json',
           },
-          body: JSON.stringify(options),
+          body: JSON.stringify(requestBody),
         },
       )
       if (response.ok) {
         const data = (await response.json()) as {
           artifactId: string
+          type?: string
+          artifactType?: string
           title: string
           href: string
           mimeType: string
         }
-        return data
+        return {
+          ...data,
+          type: data.type ?? data.artifactType ?? options.artifactType,
+        }
       }
     } catch {
       // Fall back to local generation below.
@@ -74,71 +393,64 @@ export async function generateArtifact(
   }
 
   if (options.artifactType === 'meteogram') {
-    const forecast = forecastSummarySchema.parse(
-      await getForecast(app, options.locationQuery, 'short'),
-    )
-    const points = forecast.periods
-      .slice(0, 6)
-      .map((period, index) => {
-        const x = 40 + index * 100
-        const y = 180 - (period.temperature - 30) * 2
-        return `${index === 0 ? 'M' : 'L'}${x},${y}`
-      })
-      .join(' ')
-    const artifactId = `meteogram-${Date.now()}.svg`
-    await writeArtifactFile(
-      app,
-      artifactId,
-      `<svg xmlns="http://www.w3.org/2000/svg" width="680" height="240" viewBox="0 0 680 240">
-        <rect width="680" height="240" fill="#0d1519" rx="18"/>
-        <path d="${points}" fill="none" stroke="#6dd6cb" stroke-width="4"/>
-        <text x="28" y="36" fill="#f5f7f8" font-family="sans-serif" font-size="18">RainCheck Meteogram</text>
-        <text x="28" y="60" fill="#9ab2b6" font-family="sans-serif" font-size="12">${forecast.location.name}</text>
-      </svg>`,
-    )
-    return {
-      artifactId,
-      title: `Meteogram for ${forecast.location.name}`,
-      href: artifactHref(artifactId),
-      mimeType: 'image/svg+xml',
+    if (!meteogramForecast) {
+      throw new Error('Meteogram forecast was not prepared.')
     }
+
+    return buildMeteogramFallback(app, meteogramForecast)
+  }
+
+  if (
+    options.artifactType === 'rainfall-chart' ||
+    options.artifactType === 'snowfall-chart' ||
+    options.artifactType === 'hydrograph'
+  ) {
+    if (!meteogramForecast) {
+      throw new Error('Forecast data was not prepared.')
+    }
+
+    return buildGenericChartFallback(
+      app,
+      options.artifactType,
+      options.locationQuery,
+      options.prompt,
+      meteogramForecast,
+    )
+  }
+
+  if (
+    options.artifactType === 'radar-loop' ||
+    options.artifactType === 'satellite-loop' ||
+    options.artifactType === 'skewt' ||
+    options.artifactType === 'model-comparison-panel' ||
+    options.artifactType === 'brief-report'
+  ) {
+    return buildPanelFallback(
+      app,
+      options.artifactType,
+      options.locationQuery,
+      options.prompt,
+    )
   }
 
   const artifactId = `report-${Date.now()}.html`
   await writeArtifactFile(
     app,
     artifactId,
-    `<!doctype html>
-    <html lang="en">
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>RainCheck Research Report</title>
-        <style>
-          body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; background: #0b1317; color: #edf3f3; }
-          main { max-width: 760px; margin: 0 auto; padding: 48px 24px 72px; }
-          h1 { margin: 0 0 8px; font-size: 32px; }
-          p, li { color: #b9c9cb; line-height: 1.6; }
-          .eyebrow { text-transform: uppercase; letter-spacing: 0.14em; font-size: 12px; color: #78d7cb; }
-        </style>
-      </head>
-      <body>
-        <main>
-          <div class="eyebrow">RainCheck research report</div>
-          <h1>${options.locationQuery}</h1>
-          <p>Generated at ${nowIso()}</p>
-          <p>${options.prompt}</p>
-          <ul>
-            <li>Official forecast and alerts should anchor the interpretation.</li>
-            <li>Model guidance, if discussed, should be labeled explicitly as guidance.</li>
-            <li>Use this report alongside the cited products shown in the chat thread.</li>
-          </ul>
-        </main>
-      </body>
-    </html>`,
+    buildReportHtml(
+      'RainCheck Research Report',
+      options.locationQuery,
+      options.prompt,
+      [
+        'Official forecast and alerts should anchor the interpretation.',
+        'Model guidance, if discussed, should be labeled explicitly as guidance.',
+        'Use this report alongside the cited products shown in the chat thread.',
+      ],
+    ),
   )
   return {
     artifactId,
+    type: 'research-report',
     title: `Research report for ${options.locationQuery}`,
     href: artifactHref(artifactId),
     mimeType: 'text/html',

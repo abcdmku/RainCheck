@@ -11,9 +11,32 @@ export const providerIdSchema = z.enum([
 export const providerSchema = providerIdSchema
 export const taskClassSchema = z.enum(['chat', 'research', 'vision'])
 export const weatherWorkflowSchema = z.enum([
+  'current-conditions',
+  'forecast',
+  'alerts',
+  'aviation',
+  'severe-weather',
+  'fire-weather',
+  'precipitation',
+  'winter-weather',
+  'medium-range',
+  'hydrology',
+  'radar',
+  'satellite',
+  'mrms',
+  'short-range-model',
+  'blend-analysis',
+  'global-model',
+  'model-comparison',
+  'tropical',
+  'marine',
+  'upper-air',
+  'historical-climate',
+  'storm-history',
+  'radar-analysis',
+  'research-brief',
   'general-weather',
   'weather-analysis',
-  'research-brief',
 ])
 export const weatherSourceStatusSchema = z.enum(['official', 'secondary'])
 export const authRequirementSchema = z.enum(['none', 'optional', 'required'])

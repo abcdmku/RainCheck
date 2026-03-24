@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -56,6 +56,45 @@ class ProductCatalogEntry(StrictModel):
 class CatalogResponse(StrictModel):
     sources: list[SourceCatalogEntry]
     products: list[ProductCatalogEntry]
+
+
+class TimeRange(StrictModel):
+    start: datetime
+    end: datetime
+
+
+class WeatherCitation(StrictModel):
+    sourceId: str
+    productId: str
+    label: str
+    official: bool
+    fetchedAt: datetime
+    validAt: datetime | None = None
+    validRange: TimeRange | None = None
+    url: str | None = None
+
+
+class ArtifactHandle(StrictModel):
+    artifactId: str
+    artifactType: str
+    title: str
+    href: str
+    mimeType: str
+
+
+class WeatherEnvelope(StrictModel):
+    sourceId: str
+    sourceName: str
+    retrievedAt: datetime
+    validAt: datetime | None = None
+    validRange: TimeRange | None = None
+    location: LocationContext | None = None
+    units: str | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    summary: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    citations: list[WeatherCitation] = Field(default_factory=list)
+    artifacts: list[ArtifactHandle] = Field(default_factory=list)
 
 
 class CitationBundle(StrictModel):
@@ -178,12 +217,57 @@ class ChartPoint(StrictModel):
     value: float
 
 
+class ChartSeries(StrictModel):
+    label: str
+    points: list[ChartPoint]
+    color: str | None = None
+
+
+class LoopFrame(StrictModel):
+    label: str
+    timestamp: datetime | None = None
+    description: str | None = None
+
+
+class ComparisonModel(StrictModel):
+    sourceId: str
+    modelLabel: str
+    cycleTime: datetime | None = None
+    validTime: datetime | None = None
+    summary: str
+    confidence: str | None = None
+
+
+class SoundingLevel(StrictModel):
+    pressureHpa: float
+    temperatureC: float | None = None
+    dewpointC: float | None = None
+    windSpeedKt: float | None = None
+    windDirectionDeg: float | None = None
+
+
 class ArtifactRequest(StrictModel):
-    artifactType: Literal["meteogram", "research-report"]
+    artifactType: Literal[
+        "meteogram",
+        "research-report",
+        "brief-report",
+        "radar-loop",
+        "satellite-loop",
+        "model-comparison-panel",
+        "hydrograph",
+        "skewt",
+        "rainfall-chart",
+        "snowfall-chart",
+    ]
     prompt: str = Field(min_length=1, max_length=4000)
     location: LocationContext | None = None
     locationQuery: str | None = None
     chartPoints: list[ChartPoint] = Field(default_factory=list)
+    chartSeries: list[ChartSeries] = Field(default_factory=list)
+    frames: list[LoopFrame] = Field(default_factory=list)
+    comparisonModels: list[ComparisonModel] = Field(default_factory=list)
+    soundingLevels: list[SoundingLevel] = Field(default_factory=list)
+    thresholds: list[ChartPoint] = Field(default_factory=list)
     sections: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -221,7 +305,18 @@ class HealthResponse(StrictModel):
     ok: bool = True
     service: str = "raincheck-weather"
     artifactTypes: list[str] = Field(
-        default_factory=lambda: ["meteogram", "research-report"]
+        default_factory=lambda: [
+            "meteogram",
+            "research-report",
+            "brief-report",
+            "radar-loop",
+            "satellite-loop",
+            "model-comparison-panel",
+            "hydrograph",
+            "skewt",
+            "rainfall-chart",
+            "snowfall-chart",
+        ]
     )
     implementedProducts: list[str] = Field(
         default_factory=lambda: [
@@ -231,5 +326,13 @@ class HealthResponse(StrictModel):
             "nws-alerts",
             "artifact-meteogram",
             "artifact-research-report",
+            "artifact-brief-report",
+            "artifact-radar-loop",
+            "artifact-satellite-loop",
+            "artifact-model-comparison-panel",
+            "artifact-hydrograph",
+            "artifact-skewt",
+            "artifact-rainfall-chart",
+            "artifact-snowfall-chart",
         ]
     )

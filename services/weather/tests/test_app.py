@@ -143,6 +143,8 @@ def test_health() -> None:
     body = response.json()
     assert body["ok"] is True
     assert "nws-forecast" in body["implementedProducts"]
+    assert "brief-report" in body["artifactTypes"]
+    assert "radar-loop" in body["artifactTypes"]
 
 
 def test_catalog() -> None:
@@ -151,7 +153,15 @@ def test_catalog() -> None:
     assert response.status_code == 200
     body = response.json()
     assert any(source["sourceId"] == "nws" for source in body["sources"])
-    assert any(product["productId"] == "nexrad-loop" for product in body["products"])
+    assert any(source["sourceId"] == "raincheck-artifacts" for source in body["sources"])
+    assert any(source["sourceId"] == "wpc" for source in body["sources"])
+    assert any(source["sourceId"] == "nhc" for source in body["sources"])
+    assert any(
+        product["productId"] == "artifact-brief-report"
+        and product["sourceId"] == "raincheck-artifacts"
+        for product in body["products"]
+    )
+    assert any(product["productId"] == "wpc-qpf-ero" for product in body["products"])
 
 
 def test_weather_analysis_endpoint() -> None:

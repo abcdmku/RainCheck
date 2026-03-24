@@ -2,6 +2,7 @@ import { Readable } from 'node:stream'
 import type { RequestClassification } from '@raincheck/contracts'
 import {
   chat,
+  maxIterations,
   type StreamChunk,
   toServerSentEventsResponse,
 } from '@tanstack/ai'
@@ -88,20 +89,131 @@ async function persistIncomingUserMessage(
 }
 
 function collectAssistantArtifacts(
-  toolOutputs: Array<{ toolName: string; result: unknown }>,
+  toolOutputs: Array<{ toolName: string; result: any }>,
 ) {
-  return toolOutputs
-    .filter((entry) => entry.toolName === 'generate_artifact')
-    .map((entry) => entry.result)
+  const artifacts: Array<Record<string, unknown>> = []
+
+  for (const entry of toolOutputs) {
+    const result = entry.result
+    if (!result || typeof result !== 'object') {
+      continue
+    }
+
+    if (Array.isArray(result.artifacts)) {
+      for (const artifact of result.artifacts) {
+        if (!artifact || typeof artifact !== 'object') {
+          continue
+        }
+
+        artifacts.push(normalizeArtifactManifest(artifact))
+      }
+      continue
+    }
+
+    if ('artifactId' in result && 'href' in result) {
+      artifacts.push(
+        normalizeArtifactManifest({
+          id: result.artifactId,
+          type: toArtifactType(String(result.artifactType ?? entry.toolName)),
+          title: result.title ?? 'Weather artifact',
+          description: result.title ?? 'Generated weather artifact',
+          mimeType: result.mimeType ?? 'application/octet-stream',
+          href: result.href,
+          createdAt: result.createdAt ?? new Date().toISOString(),
+          sourceIds: Array.isArray(result.sourceIds) ? result.sourceIds : [],
+        }),
+      )
+    }
+  }
+
+  const deduped = new Map<string, Record<string, unknown>>()
+  for (const artifact of artifacts) {
+    deduped.set(String(artifact.id), artifact)
+  }
+
+  return [...deduped.values()]
 }
 
 function collectAssistantCitations(
   toolOutputs: Array<{ toolName: string; result: any }>,
 ) {
-  const citationResult = toolOutputs.find(
-    (entry) => entry.toolName === 'generate_citation_bundle',
-  )
-  return citationResult?.result?.citations ?? []
+  const citations: Array<Record<string, unknown>> = []
+
+  for (const entry of toolOutputs) {
+    const result = entry.result
+    if (Array.isArray(result)) {
+      for (const item of result) {
+        collectCitationLike(item, citations)
+      }
+      continue
+    }
+
+    collectCitationLike(result, citations)
+  }
+
+  const deduped = new Map<string, Record<string, unknown>>()
+  for (const citation of citations) {
+    const key =
+      typeof citation.id === 'string'
+        ? citation.id
+        : `${citation.sourceId ?? 'source'}:${citation.productId ?? 'product'}:${citation.url ?? ''}`
+    deduped.set(key, citation)
+  }
+
+  return [...deduped.values()]
+}
+
+function collectCitationLike(
+  value: unknown,
+  citations: Array<Record<string, unknown>>,
+) {
+  if (!value || typeof value !== 'object') {
+    return
+  }
+
+  if (Array.isArray((value as any).citations)) {
+    for (const citation of (value as any).citations) {
+      if (citation && typeof citation === 'object') {
+        citations.push(citation as Record<string, unknown>)
+      }
+    }
+  }
+
+  const source = (value as any).source
+  if (source && typeof source === 'object') {
+    citations.push(source as Record<string, unknown>)
+  }
+}
+
+function toArtifactType(value: string) {
+  const normalized = value.toLowerCase()
+  if (normalized.includes('radar')) {
+    return 'radar-loop'
+  }
+  if (normalized.includes('satellite')) {
+    return 'satellite-loop'
+  }
+  if (normalized.includes('report') || normalized.includes('brief')) {
+    return 'report'
+  }
+  return 'chart'
+}
+
+function normalizeArtifactManifest(value: Record<string, unknown>) {
+  return {
+    id: String(value.id ?? value.artifactId ?? `artifact-${Date.now()}`),
+    type: toArtifactType(String(value.type ?? value.artifactType ?? 'chart')),
+    title: String(value.title ?? 'Weather artifact'),
+    description: String(
+      value.description ?? value.title ?? 'Generated weather artifact',
+    ),
+    mimeType: String(value.mimeType ?? 'application/octet-stream'),
+    href: String(value.href ?? ''),
+    createdAt: String(value.createdAt ?? new Date().toISOString()),
+    sourceIds: Array.isArray(value.sourceIds)
+      ? value.sourceIds.map((sourceId) => String(sourceId))
+      : [],
+  }
 }
 
 async function* streamAndPersist(
@@ -113,6 +225,7 @@ async function* streamAndPersist(
       model: string
     }
     classification: RequestClassification
+    locationHint?: string
     stream: AsyncIterable<StreamChunk>
   },
 ) {
@@ -174,6 +287,9 @@ export async function handleChatRequest(
     messages: Array<any>
     provider?: 'openai' | 'anthropic' | 'gemini' | 'openrouter'
     model?: string
+    locationOverride?: {
+      label?: string
+    }
   },
 ) {
   await persistIncomingUserMessage(app, body.conversationId, body.messages)
@@ -200,9 +316,12 @@ export async function handleChatRequest(
     adapter,
     messages: body.messages as any,
     tools,
-    systemPrompts: [buildSystemPrompt(classification)],
+    systemPrompts: [
+      buildSystemPrompt(classification, body.locationOverride?.label),
+    ],
     conversationId: body.conversationId,
     middleware: buildMiddleware(app) as any,
+    agentLoopStrategy: maxIterations(8),
   })
 
   return {
@@ -212,6 +331,7 @@ export async function handleChatRequest(
       conversationId: body.conversationId,
       route,
       classification,
+      locationHint: body.locationOverride?.label,
       stream,
     }),
   }

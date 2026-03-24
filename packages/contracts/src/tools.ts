@@ -3,17 +3,61 @@ import { z } from 'zod'
 
 import { locationContextSchema, userSettingsSchema } from './chat'
 import {
-  alertSummarySchema,
-  aviationSummarySchema,
   citationBundleSchema,
-  currentConditionsSchema,
-  forecastSummarySchema,
   hydrologySummarySchema,
+  modelComparisonEntrySchema,
+  modelComparisonSummarySchema,
   normalizedLocationSchema,
   reportOutlineSchema,
   severeSummarySchema,
+  weatherToolEnvelopeSchema,
 } from './weather'
 
+export const weatherArtifactTypeSchema = z.enum([
+  'meteogram',
+  'research-report',
+  'radar-loop',
+  'satellite-loop',
+  'model-comparison-panel',
+  'hydrograph',
+  'skewt',
+  'rainfall-chart',
+  'snowfall-chart',
+  'brief-report',
+])
+
+const weatherLocationQueryInputSchema = z.object({
+  locationQuery: z.string(),
+})
+
+const weatherLocationQueryWindowInputSchema = weatherLocationQueryInputSchema.extend(
+  {
+    timeHorizonHours: z.number().int().min(0).max(720).optional(),
+  },
+)
+
+const weatherLocationQueryProductInputSchema = weatherLocationQueryWindowInputSchema.extend(
+  {
+    product: z.string().optional(),
+  },
+)
+
+const weatherStationInputSchema = z.object({
+  stationId: z.string(),
+})
+
+const compareModelsInputSchema = z.object({
+  locationName: z.string(),
+  comparedModels: z.array(modelComparisonEntrySchema).min(2),
+})
+
+const weatherArtifactRequestInputSchema = z.object({
+  artifactType: weatherArtifactTypeSchema,
+  locationQuery: z.string(),
+  prompt: z.string(),
+})
+
+// Always-on core tools.
 export const resolveLocationToolDef = toolDefinition({
   name: 'resolve_location',
   description:
@@ -28,60 +72,196 @@ export const getCurrentConditionsToolDef = toolDefinition({
   name: 'get_current_conditions',
   description:
     'Fetch official current conditions and latest observations for a normalized location.',
-  inputSchema: z.object({
-    locationQuery: z.string(),
-  }),
-  outputSchema: currentConditionsSchema,
+  inputSchema: weatherLocationQueryInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
 })
 
 export const getForecastToolDef = toolDefinition({
-  name: 'get_forecast_summary',
+  name: 'get_forecast',
   description:
     'Fetch the official short or extended forecast for a normalized location.',
   inputSchema: z.object({
     locationQuery: z.string(),
     horizon: z.enum(['short', 'extended']).default('short'),
   }),
-  outputSchema: forecastSummarySchema,
+  outputSchema: weatherToolEnvelopeSchema,
 })
 
 export const getAlertsToolDef = toolDefinition({
   name: 'get_alerts',
   description:
     'Fetch active official weather alerts for a normalized location.',
-  inputSchema: z.object({
-    locationQuery: z.string(),
-  }),
-  outputSchema: z.array(alertSummarySchema),
+  inputSchema: weatherLocationQueryInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
 })
 
-export const getAviationSummaryToolDef = toolDefinition({
-  name: 'get_aviation_summary',
+export const getAviationWeatherToolDef = toolDefinition({
+  name: 'get_aviation_weather',
   description:
-    'Fetch aviation weather context using METAR and TAF products for a station or nearby airport.',
-  inputSchema: z.object({
-    stationId: z.string(),
-  }),
-  outputSchema: aviationSummarySchema,
+    'Fetch aviation weather context using METAR, TAF, and other aviation products for a station or nearby airport.',
+  inputSchema: weatherStationInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getAviationSummaryToolDef = getAviationWeatherToolDef
+
+export const getSpcSevereProductsToolDef = toolDefinition({
+  name: 'get_spc_severe_products',
+  description:
+    'Fetch severe-weather outlook, watch, mesoanalysis, and mesoscale discussion context for a place or region.',
+  inputSchema: weatherLocationQueryWindowInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
 })
 
 export const getSevereSummaryToolDef = toolDefinition({
   name: 'get_severe_summary',
   description:
     'Fetch severe-weather outlook and watch context for a place or region.',
-  inputSchema: z.object({
-    locationQuery: z.string(),
-  }),
+  inputSchema: weatherLocationQueryInputSchema,
   outputSchema: severeSummarySchema,
+})
+
+export const getFireWeatherProductsToolDef = toolDefinition({
+  name: 'get_fire_weather_products',
+  description:
+    'Fetch fire-weather outlook context for a place or region.',
+  inputSchema: weatherLocationQueryWindowInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getWpcQpfEroToolDef = toolDefinition({
+  name: 'get_wpc_qpf_ero',
+  description:
+    'Fetch WPC quantitative precipitation forecast and excessive rainfall outlook context for a place or region.',
+  inputSchema: weatherLocationQueryWindowInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getWpcWinterWeatherToolDef = toolDefinition({
+  name: 'get_wpc_winter_weather',
+  description:
+    'Fetch WPC probabilistic winter weather context for a place or region.',
+  inputSchema: weatherLocationQueryWindowInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getWpcMediumRangeHazardsToolDef = toolDefinition({
+  name: 'get_wpc_medium_range_hazards',
+  description:
+    'Fetch WPC medium-range hazards context for a place or region.',
+  inputSchema: weatherLocationQueryWindowInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getHydrologyNwpsToolDef = toolDefinition({
+  name: 'get_hydrology_nwps',
+  description:
+    'Fetch NWPS hydrology and river-stage context for a place or gauge.',
+  inputSchema: weatherLocationQueryWindowInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
 })
 
 export const getHydrologySummaryToolDef = toolDefinition({
   name: 'get_hydrology_summary',
   description: 'Fetch hydrology and river-stage context for a place or gauge.',
-  inputSchema: z.object({
-    locationQuery: z.string(),
-  }),
+  inputSchema: weatherLocationQueryInputSchema,
   outputSchema: hydrologySummarySchema,
+})
+
+export const getNexradRadarToolDef = toolDefinition({
+  name: 'get_nexrad_radar',
+  description:
+    'Fetch NEXRAD radar context and loop-ready frame handles for active storms.',
+  inputSchema: weatherLocationQueryProductInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getGoesSatelliteToolDef = toolDefinition({
+  name: 'get_goes_satellite',
+  description:
+    'Fetch GOES satellite context and loop-ready frame handles for cloud, water vapor, smoke, fog, or lightning analysis.',
+  inputSchema: weatherLocationQueryProductInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getMrmsProductsToolDef = toolDefinition({
+  name: 'get_mrms_products',
+  description:
+    'Fetch MRMS precipitation-rate, QPE, and composite analysis products.',
+  inputSchema: weatherLocationQueryProductInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getShortRangeModelGuidanceToolDef = toolDefinition({
+  name: 'get_short_range_model_guidance',
+  description:
+    'Fetch short-range model guidance for timing, fog, snow bands, or mesoscale evolution.',
+  inputSchema: weatherLocationQueryProductInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getBlendAndAnalysisGuidanceToolDef = toolDefinition({
+  name: 'get_blend_and_analysis_guidance',
+  description:
+    'Fetch blend and analysis guidance for near-term surface forecast calibration.',
+  inputSchema: weatherLocationQueryProductInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getGlobalModelGuidanceToolDef = toolDefinition({
+  name: 'get_global_model_guidance',
+  description:
+    'Fetch global model guidance for 2 to 10 day synoptic pattern questions.',
+  inputSchema: weatherLocationQueryProductInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const compareModelsToolDef = toolDefinition({
+  name: 'compare_models',
+  description:
+    'Normalize and compare at least two weather model guidance results into one object for synthesis.',
+  inputSchema: compareModelsInputSchema,
+  outputSchema: modelComparisonSummarySchema,
+})
+
+export const getTropicalWeatherToolDef = toolDefinition({
+  name: 'get_tropical_weather',
+  description:
+    'Fetch tropical weather outlook and advisory context for a basin, storm, or coastal region.',
+  inputSchema: weatherLocationQueryWindowInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getMarineOceanGuidanceToolDef = toolDefinition({
+  name: 'get_marine_ocean_guidance',
+  description:
+    'Fetch marine and ocean guidance for wave, swell, surge, sea-surface temperature, or current questions.',
+  inputSchema: weatherLocationQueryProductInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getUpperAirSoundingsToolDef = toolDefinition({
+  name: 'get_upper_air_soundings',
+  description:
+    'Fetch upper-air sounding context for severe-weather setup, teaching, or research.',
+  inputSchema: weatherLocationQueryProductInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getHistoricalClimateToolDef = toolDefinition({
+  name: 'get_historical_climate',
+  description:
+    'Fetch historical climate, normals, or anomaly context for a location or station.',
+  inputSchema: weatherLocationQueryWindowInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
+})
+
+export const getStormHistoryToolDef = toolDefinition({
+  name: 'get_storm_history',
+  description:
+    'Fetch historical storm-event context for severe-weather research.',
+  inputSchema: weatherLocationQueryProductInputSchema,
+  outputSchema: weatherToolEnvelopeSchema,
 })
 
 export const generateCitationBundleToolDef = toolDefinition({
@@ -106,15 +286,11 @@ export const generateReportOutlineToolDef = toolDefinition({
   outputSchema: reportOutlineSchema,
 })
 
-export const generateArtifactToolDef = toolDefinition({
-  name: 'generate_artifact',
+export const generateWeatherArtifactToolDef = toolDefinition({
+  name: 'generate_weather_artifact',
   description:
-    'Generate a server-side weather artifact such as a chart or report for the current thread.',
-  inputSchema: z.object({
-    artifactType: z.enum(['meteogram', 'research-report']),
-    locationQuery: z.string(),
-    prompt: z.string(),
-  }),
+    'Generate a server-side weather artifact such as a chart, loop, brief, or report for the current thread.',
+  inputSchema: weatherArtifactRequestInputSchema,
   outputSchema: z.object({
     artifactId: z.string(),
     title: z.string(),
@@ -122,6 +298,8 @@ export const generateArtifactToolDef = toolDefinition({
     mimeType: z.string(),
   }),
 })
+
+export const generateArtifactToolDef = generateWeatherArtifactToolDef
 
 export const requestGeolocationPermissionToolDef = toolDefinition({
   name: 'request_geolocation_permission',

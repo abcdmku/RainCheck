@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .artifacts import generate_meteogram, generate_report
+from .artifacts import generate_weather_artifact
 from .catalog import build_catalog
 from .errors import ServiceError
 from .models import (
@@ -93,7 +93,7 @@ async def artifact_meteogram(
     payload: ArtifactRequest,
     settings: Settings = Depends(get_settings),
 ) -> ArtifactResponse:
-    return generate_meteogram(settings, payload)
+    return generate_weather_artifact(settings, payload)
 
 
 @app.post("/artifacts/research-report", response_model=ArtifactResponse)
@@ -101,4 +101,68 @@ async def artifact_report(
     payload: ArtifactRequest,
     settings: Settings = Depends(get_settings),
 ) -> ArtifactResponse:
-    return generate_report(settings, payload)
+    return generate_weather_artifact(settings, payload)
+
+
+@app.post("/artifacts/brief-report", response_model=ArtifactResponse)
+async def artifact_brief_report(
+    payload: ArtifactRequest,
+    settings: Settings = Depends(get_settings),
+) -> ArtifactResponse:
+    return generate_weather_artifact(settings, payload)
+
+
+@app.post("/artifacts/radar-loop", response_model=ArtifactResponse)
+async def artifact_radar_loop(
+    payload: ArtifactRequest,
+    settings: Settings = Depends(get_settings),
+) -> ArtifactResponse:
+    return generate_weather_artifact(settings, payload)
+
+
+@app.post("/artifacts/satellite-loop", response_model=ArtifactResponse)
+async def artifact_satellite_loop(
+    payload: ArtifactRequest,
+    settings: Settings = Depends(get_settings),
+) -> ArtifactResponse:
+    return generate_weather_artifact(settings, payload)
+
+
+@app.post("/artifacts/model-comparison-panel", response_model=ArtifactResponse)
+async def artifact_model_comparison_panel(
+    payload: ArtifactRequest,
+    settings: Settings = Depends(get_settings),
+) -> ArtifactResponse:
+    return generate_weather_artifact(settings, payload)
+
+
+@app.post("/artifacts/hydrograph", response_model=ArtifactResponse)
+async def artifact_hydrograph(
+    payload: ArtifactRequest,
+    settings: Settings = Depends(get_settings),
+) -> ArtifactResponse:
+    return generate_weather_artifact(settings, payload)
+
+
+@app.post("/artifacts/skewt", response_model=ArtifactResponse)
+async def artifact_skewt(
+    payload: ArtifactRequest,
+    settings: Settings = Depends(get_settings),
+) -> ArtifactResponse:
+    return generate_weather_artifact(settings, payload)
+
+
+@app.post("/artifacts/rainfall-chart", response_model=ArtifactResponse)
+async def artifact_rainfall_chart(
+    payload: ArtifactRequest,
+    settings: Settings = Depends(get_settings),
+) -> ArtifactResponse:
+    return generate_weather_artifact(settings, payload)
+
+
+@app.post("/artifacts/snowfall-chart", response_model=ArtifactResponse)
+async def artifact_snowfall_chart(
+    payload: ArtifactRequest,
+    settings: Settings = Depends(get_settings),
+) -> ArtifactResponse:
+    return generate_weather_artifact(settings, payload)
