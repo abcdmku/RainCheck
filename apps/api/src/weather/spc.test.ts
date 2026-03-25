@@ -43,34 +43,217 @@ describe('getSpcSevereProducts', () => {
     vi.restoreAllMocks()
   })
 
-  it('returns a structured severe-weather envelope from the SPC/NWS severe page', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      htmlResponse(`
-        <html>
-          <head><title>Severe Weather Outlook</title></head>
-          <body>
-            <p>Valid 1200Z Thu Mar 24 2026 Through 1200Z Fri Mar 25 2026</p>
-            <p>Day 1 Convective Outlook - Slight Risk</p>
-            <p>Mesoscale Discussion and watches linked here.</p>
-          </body>
-        </html>
-      `),
-    )
+  it('returns official SPC outlook pages with parsed risk summaries and live links', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+
+      if (url.includes('/products/outlook/day1otlk.html')) {
+        return htmlResponse(`
+          <html>
+            <script>show_tab('otlk_2000')</script>
+            <body>
+              <pre>
+Valid 242000Z - 251200Z
+
+...NO SEVERE THUNDERSTORM AREAS FORECAST...
+
+...SUMMARY...
+Severe storms are not expected today.
+              </pre>
+            </body>
+          </html>
+        `)
+      }
+
+      if (url.includes('/products/outlook/day2otlk.html')) {
+        return htmlResponse(`
+          <html>
+            <script>show_tab('otlk_0600')</script>
+            <body>
+              <pre>
+Valid 251200Z - 261200Z
+
+...NO SEVERE THUNDERSTORM AREAS FORECAST...
+
+...SUMMARY...
+Severe storms are not expected through Wednesday night.
+              </pre>
+            </body>
+          </html>
+        `)
+      }
+
+      if (url.includes('/products/outlook/day3otlk.html')) {
+        return htmlResponse(`
+          <html>
+            <script>show_tab('otlk_1930')</script>
+            <body>
+              <pre>
+Valid 261200Z - 271200Z
+
+...THERE IS A SLIGHT RISK OF SEVERE THUNDERSTORMS OVER MUCH OF
+ILLINOIS...INDIANA...AND WESTERN OHIO...
+
+...SUMMARY...
+Scattered strong to severe thunderstorms are expected late Thursday
+afternoon and evening across parts of the Midwest and Ohio River
+Valley. Very large hail appears likely. A few tornadoes will be
+possible.
+              </pre>
+            </body>
+          </html>
+        `)
+      }
+
+      if (url.includes('/products/exper/day4-8/')) {
+        return htmlResponse(`
+          <html>
+            <script>show_tab('48')</script>
+            <body>
+              <pre>
+Valid 271200Z - 011200Z
+
+...DISCUSSION...
+Widespread severe thunderstorm potential appears limited through the
+remainder of March.
+              </pre>
+            </body>
+          </html>
+        `)
+      }
+
+      if (url.includes('/products/watch/')) {
+        return htmlResponse(`
+          <html>
+            <body>
+              <strong>No watches are currently valid</strong>
+              <a href="/products/watch/ww0074.html">Most recently issued watch #0074.</a>
+            </body>
+          </html>
+        `)
+      }
+
+      if (url.includes('/products/md/')) {
+        return htmlResponse(`
+          <html>
+            <body>
+              <center>No Mesoscale Discussions are currently in effect.</center>
+              <center><a href="/products/md/md0290.html">Most recently issued Mesoscale Discussion #0290.</a></center>
+            </body>
+          </html>
+        `)
+      }
+
+      if (url.includes('geocoding.geo.census.gov')) {
+        return new Response(
+          JSON.stringify({ result: { addressMatches: [] } }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        )
+      }
+
+      if (url.includes('geocoding-api.open-meteo.com')) {
+        return new Response(
+          JSON.stringify({
+            results: [
+              {
+                name: 'Chicago',
+                latitude: 41.85003,
+                longitude: -87.65005,
+                admin1: 'Illinois',
+                country: 'United States',
+                country_code: 'US',
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        )
+      }
+
+      throw new Error(`Unexpected URL in SPC test: ${url}`)
+    })
+
     vi.stubGlobal('fetch', fetchMock)
 
-    const result = await getSpcSevereProducts(app, '35.22,-97.44')
+    const result = await getSpcSevereProducts(app, 'Chicago')
+    const day3Product = result.data.products.find(
+      (product) => product.productId === 'spc-day3-convective-outlook',
+    )
 
     expect(result.sourceId).toBe('spc')
     expect(result.location).toMatchObject({
-      latitude: 35.22,
-      longitude: -97.44,
+      name: 'Chicago, Illinois, United States',
+      region: 'Illinois',
     })
-    expect(result.data.products[0]?.productId).toBe(
-      'spc-day1-convective-outlook',
+    expect(result.summary).toContain('SPC Day 3 Convective Outlook')
+    expect(result.thumbnailUrl).toBe(
+      'https://www.spc.noaa.gov/products/outlook/day3otlk_1930.png',
     )
-    expect(result.validRange).toMatchObject({
-      start: '1200Z Thu Mar 24 2026',
-      end: '1200Z Fri Mar 25 2026',
+    expect(result.imageAlt).toBe('SPC Day 3 Convective Outlook outlook graphic')
+    expect(day3Product?.url).toBe(
+      'https://www.spc.noaa.gov/products/outlook/day3otlk.html',
+    )
+    expect(day3Product?.imageUrl).toBe(
+      'https://www.spc.noaa.gov/products/outlook/day3otlk_1930.png',
+    )
+    expect(day3Product?.summary).toContain('Very large hail appears likely')
+    expect(day3Product?.summary).toContain('ILLINOIS')
+    expect(result.data.watchContext).toContain('No watches are currently valid')
+    expect(result.data.mesoscaleContext).toContain(
+      'No mesoscale discussions are currently in effect',
+    )
+    expect(result.data.mesoanalysisUrl).toBe(
+      'https://www.spc.noaa.gov/exper/mesoanalysis/',
+    )
+  })
+
+  it('supports national severe outlook requests without geocoding a city', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+
+      if (url.includes('/products/watch/')) {
+        return htmlResponse('<strong>No watches are currently valid</strong>')
+      }
+
+      if (url.includes('/products/md/')) {
+        return htmlResponse(
+          '<center>No Mesoscale Discussions are currently in effect.</center>',
+        )
+      }
+
+      return htmlResponse(`
+        <html>
+          <body>
+            <pre>
+Valid 261200Z - 271200Z
+
+...THERE IS A SLIGHT RISK OF SEVERE THUNDERSTORMS...
+
+...SUMMARY...
+Scattered severe thunderstorms are expected across parts of the Midwest.
+            </pre>
+          </body>
+        </html>
+      `)
     })
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await getSpcSevereProducts(app, '')
+
+    expect(result.location).toMatchObject({
+      query: 'United States',
+      name: 'Contiguous United States',
+      resolvedBy: 'spc-national-default',
+    })
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('geocoding'),
+      expect.anything(),
+    )
   })
 })

@@ -59,6 +59,11 @@ export type WeatherEnvelope<TData> = {
   data: TData
   citations: Array<Citation>
   artifacts?: Array<WeatherArtifactHandle>
+  thumbnailUrl?: string
+  imageAlt?: string
+  previewArtifactId?: string
+  fullArtifactId?: string
+  severity?: string
 }
 
 export type WeatherFetchResult<T> = {
@@ -161,6 +166,11 @@ export function buildWeatherEnvelope<TData>(input: {
   }
   citations?: Array<Citation>
   artifacts?: Array<WeatherArtifactHandle>
+  thumbnailUrl?: string
+  imageAlt?: string
+  previewArtifactId?: string
+  fullArtifactId?: string
+  severity?: string
   retrievedAt?: string
 }) {
   const retrievedAt = input.retrievedAt ?? nowIso()
@@ -182,6 +192,11 @@ export function buildWeatherEnvelope<TData>(input: {
     data: input.data,
     citations: input.citations ?? [sourceCitation(input.source, retrievedAt)],
     artifacts: input.artifacts,
+    thumbnailUrl: input.thumbnailUrl,
+    imageAlt: input.imageAlt,
+    previewArtifactId: input.previewArtifactId,
+    fullArtifactId: input.fullArtifactId,
+    severity: input.severity,
   } satisfies WeatherEnvelope<TData>
 }
 

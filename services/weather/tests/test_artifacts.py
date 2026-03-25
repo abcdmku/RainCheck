@@ -78,7 +78,7 @@ client = TestClient(app)
                     },
                 ],
             },
-            "text/html",
+            "image/svg+xml",
             "HRRR",
         ),
         (
@@ -173,4 +173,3 @@ def test_generated_artifact_routes(
     assert body["artifactType"] == payload["artifactType"]
     assert (tmp_path / body["artifactId"]).exists()
     assert expected_fragment in (tmp_path / body["artifactId"]).read_text(encoding="utf-8")
-

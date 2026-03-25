@@ -43,9 +43,17 @@ describe('weather contracts', () => {
     expect(getForecastToolDef.name).toBe('get_forecast')
     expect(getAviationSummaryToolDef.name).toBe('get_aviation_weather')
     expect(getSpcSevereProductsToolDef.name).toBe('get_spc_severe_products')
-    expect(generateWeatherArtifactToolDef.name).toBe('generate_weather_artifact')
+    expect(generateWeatherArtifactToolDef.name).toBe(
+      'generate_weather_artifact',
+    )
     expect(generateArtifactToolDef.name).toBe('generate_weather_artifact')
     expect(weatherArtifactTypeSchema.options).toContain('radar-loop')
+  })
+
+  it('defaults national-capable tools to a United States location query', () => {
+    expect(getSpcSevereProductsToolDef.inputSchema!.parse({})).toMatchObject({
+      locationQuery: 'United States',
+    })
   })
 
   it('requires a valid weather envelope time window', () => {
@@ -96,7 +104,9 @@ describe('weather contracts', () => {
   })
 
   it('includes the missing public weather families in the catalog', () => {
-    const sourceIds = new Set(weatherSourceCatalog.map((entry) => entry.sourceId))
+    const sourceIds = new Set(
+      weatherSourceCatalog.map((entry) => entry.sourceId),
+    )
 
     expect(sourceIds.has('spc-fire')).toBe(true)
     expect(sourceIds.has('wpc-winter')).toBe(true)

@@ -15,6 +15,7 @@ type WpcProduct = {
   title: string
   summary: string
   url: string
+  imageUrl?: string
   validRange?: {
     start: string
     end: string
@@ -27,11 +28,19 @@ type WpcData = {
 }
 
 function qpfUrl() {
-  return 'https://www.wpc.ncep.noaa.gov/qpf/colqpf.shtml'
+  return 'https://www.wpc.ncep.noaa.gov/qpf/qpf2.shtml'
 }
 
 function eroUrl() {
   return 'https://www.wpc.ncep.noaa.gov/qpf/excessive_rainfall_outlook_ero.php'
+}
+
+function qpfImageUrl() {
+  return 'https://www.wpc.ncep.noaa.gov/qpf/fill_94qwbg.gif'
+}
+
+function eroImageUrl() {
+  return 'https://www.wpc.ncep.noaa.gov/qpf/94ewbg.gif'
 }
 
 function winterUrl() {
@@ -93,6 +102,8 @@ export async function getWpcQpfEro(
     summary:
       summarizeText(`${qpfText} ${eroText}`, 260) ||
       `WPC rainfall and excessive rainfall outlook context for ${location.name}.`,
+    thumbnailUrl: eroImageUrl(),
+    imageAlt: 'WPC excessive rainfall outlook map',
     data: {
       products: [
         {
@@ -100,6 +111,7 @@ export async function getWpcQpfEro(
           title: 'WPC Quantitative Precipitation Forecast',
           summary: summarizeText(qpfText, 180),
           url: qpfUrl(),
+          imageUrl: qpfImageUrl(),
           validRange: extractWindow(qpfText),
         },
         {
@@ -107,6 +119,7 @@ export async function getWpcQpfEro(
           title: 'WPC Excessive Rainfall Outlook',
           summary: summarizeText(eroText, 180),
           url: eroUrl(),
+          imageUrl: eroImageUrl(),
           validRange: extractWindow(eroText),
         },
       ],

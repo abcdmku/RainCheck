@@ -7,6 +7,17 @@ function includesAny(input: string, terms: Array<string>) {
   return terms.some((term) => input.includes(term))
 }
 
+function normalizeClassificationInput(message: string) {
+  return message
+    .toLowerCase()
+    .replace(/\bstrorms?\b/g, 'storms')
+    .replace(/\bstrorm\b/g, 'storm')
+    .replace(/\bnextg\b/g, 'next')
+    .replace(/\bsever\b/g, 'severe')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 const researchTerms = [
   'research',
   'brief',
@@ -30,7 +41,7 @@ const artifactTerms = [
 
 const aviationTerms = ['aviation', 'metar', 'taf', 'ifr', 'mvfr', 'vfr', 'airport', 'sigmet', 'g-airmet', 'gairmet', 'pirep', 'cwa']
 const tropicalTerms = ['hurricane', 'tropical storm', 'tropical depression', 'nhc', 'cone', 'landfall', 'invest']
-const marineTerms = ['marine', 'ocean', 'wave', 'waves', 'swell', 'sst', 'sea surface', 'current', 'rtofs', 'wavewatch', 'buoy']
+const marineTerms = ['marine', 'ocean', 'wave', 'waves', 'swell', 'sst', 'sea surface', 'ocean current', 'ocean currents', 'sea current', 'sea currents', 'rtofs', 'wavewatch', 'buoy']
 const upperAirTerms = ['sounding', 'skewt', 'skew-t', 'cape', 'shear', 'lapse rate', 'hodograph', 'parcel']
 const fireWeatherTerms = ['fire weather', 'wildfire', 'red flag', 'brush fire', 'spread risk']
 const hydrologyTerms = ['river', 'stream', 'gauge', 'streamflow', 'river level', 'flood stage', 'hydrology']
@@ -39,15 +50,32 @@ const satelliteTerms = ['satellite', 'water vapor', 'cloud top', 'glm', 'fog', '
 const mrmsTerms = ['mrms', 'qpe', 'precip rate', 'precipitation rate', 'lowest altitude reflectivity']
 const precipitationTerms = ['qpf', 'excessive rainfall', 'ero', 'flash flood', 'rainfall total', 'rain totals']
 const winterTerms = ['snow', 'ice', 'freezing rain', 'sleet', 'blizzard', 'winter storm']
-const severeTerms = ['tornado', 'hail', 'damaging wind', 'severe thunderstorm', 'convective', 'mesoscale', 'storm prediction center', 'spc', 'storm setup']
+const severeTerms = ['tornado', 'hail', 'damaging wind', 'severe thunderstorm', 'convective', 'mesoscale', 'storm prediction center', 'spc', 'storm setup', 'convective outlook', 'enhanced risk', 'slight risk', 'moderate risk', 'high risk', 'severe']
 const shortRangeModelTerms = ['hrrr', 'rap', 'nam', 'href', 'convective timing', 'fog timing', 'snow band']
 const blendAnalysisTerms = ['nbm', 'rtma', 'urma', 'blend', 'surface analysis']
 const globalModelTerms = ['gfs', 'gefs', 'ecmwf', 'ifs', 'aifs', 'synoptic', 'pattern', 'days 2-10', 'medium range']
 const stormHistoryTerms = ['storm history', 'storm events', 'outbreak history', 'what happened', 'storm data']
 const historicalClimateTerms = ['climate', 'normal', 'normals', 'anomaly', 'historical', 'on this date', 'record high', 'record low']
 const alertTerms = ['alert', 'warning', 'watch', 'advisory']
+const genericModelTerms = ['current models', 'current model', 'latest models', 'latest model', 'model guidance', 'ensemble guidance']
+const broadStormLocatorTerms = ['where are the best storms', 'where are the most severe storms', 'where are storms happening', 'where will the best storms be', 'where will the most severe storms be', 'best storms happening', 'most severe storms happening']
 
 function inferTimeHorizonHours(input: string) {
+  const nextDayMatch = input.match(/\bnext\s+([1-9]|10)\s*[- ]?days?\b/)
+  if (nextDayMatch?.[1]) {
+    return Number(nextDayMatch[1]) * 24
+  }
+
+  const dayWindowMatch = input.match(/\b([1-9]|10)\s*[- ]?days?\b/)
+  if (dayWindowMatch?.[1]) {
+    return Number(dayWindowMatch[1]) * 24
+  }
+
+  const numberedDayMatch = input.match(/\bday\s*([1-9]|10)\b/)
+  if (numberedDayMatch?.[1]) {
+    return Number(numberedDayMatch[1]) * 24
+  }
+
   if (includesAny(input, ['next 10 days', 'days 2-10', 'day 7', 'week', 'weekend'])) {
     return 240
   }
@@ -75,6 +103,7 @@ function buildClassification(
     taskClass?: RequestClassification['taskClass']
     needsArtifact?: boolean
     timeHorizonHours?: number
+    locationRequired?: boolean
   } = {},
 ): RequestClassification {
   const researchRequested = includesAny(input, researchTerms)
@@ -109,13 +138,37 @@ function buildClassification(
     taskClass,
     intent,
     timeHorizonHours: options.timeHorizonHours ?? inferTimeHorizonHours(input),
-    locationRequired: true,
+    locationRequired: options.locationRequired ?? true,
     needsArtifact,
   })
 }
 
+function includesSevereSignal(input: string) {
+  return (
+    includesAny(input, severeTerms) ||
+    includesAny(input, ['best storms', 'storms happening', 'storm corridor', 'storm chase']) ||
+    (input.includes('storm') && input.includes('severe'))
+  )
+}
+
 export function classifyRequest(message: string): RequestClassification {
-  const normalized = message.toLowerCase()
+  const normalized = normalizeClassificationInput(message)
+  const timeHorizonHours = inferTimeHorizonHours(normalized)
+  const broadStormLocator =
+    includesAny(normalized, broadStormLocatorTerms) ||
+    ((normalized.includes('where are') || normalized.includes('where will')) &&
+      includesSevereSignal(normalized))
+  const modelDrivenStormAnalysis =
+    broadStormLocator && includesAny(normalized, genericModelTerms)
+
+  if (modelDrivenStormAnalysis) {
+    return buildClassification('weather-analysis', normalized, {
+      taskClass: 'research',
+      timeHorizonHours,
+      locationRequired: false,
+      needsArtifact: false,
+    })
+  }
 
   if (includesAny(normalized, aviationTerms)) {
     return buildClassification('aviation', normalized, {
@@ -208,8 +261,14 @@ export function classifyRequest(message: string): RequestClassification {
     return buildClassification('precipitation', normalized)
   }
 
-  if (includesAny(normalized, severeTerms)) {
-    return buildClassification('severe-weather', normalized)
+  if (includesSevereSignal(normalized) || broadStormLocator) {
+    return buildClassification('severe-weather', normalized, {
+      taskClass:
+        broadStormLocator || timeHorizonHours >= 72 ? 'research' : 'chat',
+      timeHorizonHours,
+      locationRequired: !broadStormLocator,
+      needsArtifact: false,
+    })
   }
 
   if (includesAny(normalized, alertTerms)) {

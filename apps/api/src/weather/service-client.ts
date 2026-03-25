@@ -19,10 +19,52 @@ type BaseArtifactType =
   | 'model-comparison-panel'
   | 'brief-report'
 
+type ArtifactChartPoint = {
+  label: string
+  value: number
+}
+
+type ArtifactChartSeries = {
+  label: string
+  points: Array<ArtifactChartPoint>
+  color?: string
+}
+
+type ArtifactLoopFrame = {
+  label: string
+  timestamp?: string
+  description?: string
+  imageUrl?: string
+}
+
+type ArtifactComparisonModel = {
+  sourceId: string
+  modelLabel: string
+  summary: string
+  confidence?: string
+  cycleTime?: string
+  validTime?: string
+}
+
+type ArtifactSoundingLevel = {
+  pressureHpa: number
+  temperatureC?: number
+  dewpointC?: number
+  windSpeedKt?: number
+  windDirectionDeg?: number
+}
+
 type ArtifactOptions = {
   artifactType: BaseArtifactType
   locationQuery: string
   prompt: string
+  chartPoints?: Array<ArtifactChartPoint>
+  chartSeries?: Array<ArtifactChartSeries>
+  frames?: Array<ArtifactLoopFrame>
+  comparisonModels?: Array<ArtifactComparisonModel>
+  soundingLevels?: Array<ArtifactSoundingLevel>
+  thresholds?: Array<ArtifactChartPoint>
+  sections?: Array<string>
 }
 
 function resolveArtifactsDir(app: FastifyInstance) {
@@ -95,7 +137,7 @@ function buildMeteogramPath(
     .join(' ')
 }
 
-function buildChartSvg(
+function buildStandaloneChartSvg(
   title: string,
   subtitle: string,
   footer: string,
@@ -113,49 +155,26 @@ function buildChartSvg(
     })
     .join(' ')
 
-  return `<!doctype html>
-  <html lang="en">
-    <head>
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>${escapeHtml(title)}</title>
-      <style>
-        body { margin: 0; background: #091419; color: #f5f7f8; font-family: ui-sans-serif, system-ui, sans-serif; }
-        main { max-width: 820px; margin: 0 auto; padding: 28px; }
-        .panel { background: #0d1519; border: 1px solid #19303a; border-radius: 18px; padding: 20px; }
-        .eyebrow { color: ${accent}; text-transform: uppercase; letter-spacing: 0.14em; font-size: 12px; }
-        h1 { margin: 8px 0 4px; font-size: 28px; }
-        p { color: #9ab2b6; line-height: 1.6; }
-      </style>
-    </head>
-    <body>
-      <main>
-        <section class="panel">
-          <div class="eyebrow">${escapeHtml(title)}</div>
-          <h1>${escapeHtml(title)}</h1>
-          <p>${escapeHtml(subtitle)}</p>
-          <svg xmlns="http://www.w3.org/2000/svg" width="720" height="260" viewBox="0 0 720 260">
-            <rect width="720" height="260" rx="18" fill="#0b1317" />
-            <path d="${pathData}" fill="none" stroke="${accent}" stroke-width="5" stroke-linecap="round" />
-            ${points
-              .map((point, index) => {
-                const x = 60 + index * 90
-                const y = 210 - ((point.value - minValue) / span) * 120
-                return `<circle cx="${x}" cy="${y}" r="4" fill="${accent}" />`
-              })
-              .join('')}
-            ${points
-              .map((point, index) => {
-                const x = 36 + index * 90
-                return `<text x="${x}" y="240" fill="#9ab2b6" font-size="11" font-family="sans-serif">${escapeHtml(point.label)}</text>`
-              })
-              .join('')}
-          </svg>
-          <p>${escapeHtml(footer)}</p>
-        </section>
-      </main>
-    </body>
-  </html>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="280" viewBox="0 0 720 280">
+    <rect width="720" height="280" rx="22" fill="#091419" />
+    <text x="32" y="38" fill="#eef5f5" font-family="sans-serif" font-size="20">${escapeHtml(title)}</text>
+    <text x="32" y="60" fill="#9ab2b6" font-family="sans-serif" font-size="12">${escapeHtml(subtitle)}</text>
+    <path d="${pathData}" fill="none" stroke="${accent}" stroke-width="5" stroke-linecap="round" />
+    ${points
+      .map((point, index) => {
+        const x = 60 + index * 90
+        const y = 210 - ((point.value - minValue) / span) * 120
+        return `<circle cx="${x}" cy="${y}" r="4" fill="${accent}" />`
+      })
+      .join('')}
+    ${points
+      .map((point, index) => {
+        const x = 36 + index * 90
+        return `<text x="${x}" y="240" fill="#9ab2b6" font-size="11" font-family="sans-serif">${escapeHtml(point.label)}</text>`
+      })
+      .join('')}
+    <text x="32" y="262" fill="#7f999e" font-family="sans-serif" font-size="11">${escapeHtml(footer)}</text>
+  </svg>`
 }
 
 function buildInfoSvg(
@@ -198,6 +217,41 @@ function buildInfoSvg(
       </main>
     </body>
   </html>`
+}
+
+function buildModelComparisonSvg(
+  locationQuery: string,
+  prompt: string,
+  models: Array<ArtifactComparisonModel>,
+) {
+  const cards = models
+    .slice(0, 4)
+    .map((model, index) => {
+      const x = 28 + (index % 2) * 332
+      const y = 92 + Math.floor(index / 2) * 82
+      const detailLine = [
+        model.cycleTime ? `Run ${model.cycleTime}` : null,
+        model.validTime ? `Valid ${model.validTime}` : null,
+      ]
+        .filter(Boolean)
+        .join(' | ')
+
+      return `
+        <rect x="${x}" y="${y}" width="304" height="66" rx="14" fill="#0f1d22" stroke="#23363f" />
+        <text x="${x + 14}" y="${y + 22}" fill="#ffd47a" font-family="sans-serif" font-size="13">${escapeHtml(model.modelLabel)}</text>
+        <text x="${x + 14}" y="${y + 39}" fill="#86a0a5" font-family="sans-serif" font-size="10">${escapeHtml(detailLine || model.sourceId)}</text>
+        <text x="${x + 14}" y="${y + 55}" fill="#dce7e7" font-family="sans-serif" font-size="11">${escapeHtml(model.summary.slice(0, 52))}</text>
+      `
+    })
+    .join('')
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="280" viewBox="0 0 720 280">
+    <rect width="720" height="280" rx="22" fill="#091419" />
+    <text x="28" y="36" fill="#eef5f5" font-family="sans-serif" font-size="20">RainCheck Model Comparison</text>
+    <text x="28" y="58" fill="#9ab2b6" font-family="sans-serif" font-size="12">${escapeHtml(locationQuery)}</text>
+    <text x="28" y="76" fill="#7f999e" font-family="sans-serif" font-size="11">${escapeHtml(prompt)}</text>
+    ${cards || '<text x="28" y="120" fill="#dce7e7" font-family="sans-serif" font-size="12">No model rows were supplied.</text>'}
+  </svg>`
 }
 
 function buildReportHtml(
@@ -255,14 +309,22 @@ function buildMeteogramFallback(app: FastifyInstance, forecast: Awaited<ReturnTy
   }))
 }
 
+function resolveChartPoints(
+  options: ArtifactOptions,
+  forecast: Awaited<ReturnType<typeof loadMeteogramForecast>>,
+) {
+  return options.chartPoints?.length
+    ? options.chartPoints
+    : buildMeteogramChartPoints(forecast)
+}
+
 function buildGenericChartFallback(
   app: FastifyInstance,
   artifactType: Exclude<BaseArtifactType, 'meteogram' | 'research-report' | 'model-comparison-panel' | 'brief-report' | 'radar-loop' | 'satellite-loop' | 'skewt'>,
-  locationQuery: string,
-  prompt: string,
+  options: ArtifactOptions,
   forecast: Awaited<ReturnType<typeof loadMeteogramForecast>>,
 ) {
-  const points = buildMeteogramChartPoints(forecast)
+  const points = resolveChartPoints(options, forecast)
   const palette: Record<string, string> = {
     'rainfall-chart': '#63c8ff',
     'snowfall-chart': '#d4e6ff',
@@ -273,66 +335,93 @@ function buildGenericChartFallback(
     'snowfall-chart': 'RainCheck Snowfall Chart',
     hydrograph: 'RainCheck Hydrograph',
   }
-  const artifactId = `${artifactType}-${Date.now()}.html`
+  const artifactId = `${artifactType}-${Date.now()}.svg`
   return writeArtifactFile(
     app,
     artifactId,
-    buildChartSvg(
+    buildStandaloneChartSvg(
       titleMap[artifactType],
-      `${locationQuery} | ${prompt}`,
-      'Placeholder chart until richer hydrologic and precipitation subsets are wired into the backend.',
+      `${options.locationQuery} | ${options.prompt}`,
+      artifactType === 'hydrograph'
+        ? 'Observed and forecast river trends remain summarized until richer gauge panels are wired in.'
+        : 'Generated from RainCheck fallback chart points.',
       points,
       palette[artifactType],
     ),
   ).then(() => ({
     artifactId,
     type: artifactType,
-    title: `${titleMap[artifactType]} for ${locationQuery}`,
+    title: `${titleMap[artifactType]} for ${options.locationQuery}`,
     href: artifactHref(artifactId),
-    mimeType: 'text/html',
+    mimeType: 'image/svg+xml',
   }))
 }
 
 function buildPanelFallback(
   app: FastifyInstance,
-  artifactType: 'radar-loop' | 'satellite-loop' | 'skewt' | 'model-comparison-panel' | 'brief-report',
-  locationQuery: string,
-  prompt: string,
+  artifactType: 'radar-loop' | 'satellite-loop' | 'skewt' | 'brief-report',
+  options: ArtifactOptions,
 ) {
   const titles: Record<typeof artifactType, string> = {
     'radar-loop': 'RainCheck Radar Loop',
     'satellite-loop': 'RainCheck Satellite Loop',
     skewt: 'RainCheck Skew-T',
-    'model-comparison-panel': 'RainCheck Model Comparison',
     'brief-report': 'RainCheck Brief Report',
   }
   const accent: Record<typeof artifactType, string> = {
     'radar-loop': '#ff7a7a',
     'satellite-loop': '#8ec9ff',
     skewt: '#8fe0c7',
-    'model-comparison-panel': '#ffcc7a',
     'brief-report': '#78d7cb',
   }
   const artifactId = `${artifactType}-${Date.now()}.html`
+  const lines =
+    options.frames?.length && (artifactType === 'radar-loop' || artifactType === 'satellite-loop')
+      ? options.frames.slice(0, 3).map((frame) =>
+          [frame.label, frame.description].filter(Boolean).join(': '),
+        )
+      : [
+          'Structured radar, satellite, model, and sounding inputs are not yet decoded in this local fallback.',
+          'The Python weather service will replace this placeholder once richer artifact generation lands.',
+          'This file still gives the chat thread a durable, clickable artifact instead of failing silently.',
+        ]
   return writeArtifactFile(
     app,
     artifactId,
     buildInfoSvg(
       titles[artifactType],
-      `${locationQuery} | ${prompt}`,
-      [
-        'Structured radar, satellite, model, and sounding inputs are not yet decoded in this local fallback.',
-        'The Python weather service will replace this placeholder once richer artifact generation lands.',
-        'This file still gives the chat thread a durable, clickable artifact instead of failing silently.',
-      ],
+      `${options.locationQuery} | ${options.prompt}`,
+      lines,
       accent[artifactType],
     ),
   ).then(() => ({
     artifactId,
     type: artifactType,
-    title: `${titles[artifactType]} for ${locationQuery}`,
+    title: `${titles[artifactType]} for ${options.locationQuery}`,
     href: artifactHref(artifactId),
     mimeType: 'text/html',
+  }))
+}
+
+function buildModelComparisonFallback(
+  app: FastifyInstance,
+  options: ArtifactOptions,
+) {
+  const artifactId = `model-comparison-panel-${Date.now()}.svg`
+  return writeArtifactFile(
+    app,
+    artifactId,
+    buildModelComparisonSvg(
+      options.locationQuery,
+      options.prompt,
+      options.comparisonModels ?? [],
+    ),
+  ).then(() => ({
+    artifactId,
+    type: 'model-comparison-panel',
+    title: `RainCheck Model Comparison for ${options.locationQuery}`,
+    href: artifactHref(artifactId),
+    mimeType: 'image/svg+xml',
   }))
 }
 
@@ -357,7 +446,7 @@ export async function generateArtifact(
             longitude: meteogramForecast.location.longitude,
             name: meteogramForecast.location.name,
           },
-          chartPoints: buildMeteogramChartPoints(meteogramForecast),
+          chartPoints: resolveChartPoints(options, meteogramForecast),
         }
       : options
   const serviceUp = await checkWeatherService(app)
@@ -412,24 +501,25 @@ export async function generateArtifact(
     return buildGenericChartFallback(
       app,
       options.artifactType,
-      options.locationQuery,
-      options.prompt,
+      options,
       meteogramForecast,
     )
+  }
+
+  if (options.artifactType === 'model-comparison-panel') {
+    return buildModelComparisonFallback(app, options)
   }
 
   if (
     options.artifactType === 'radar-loop' ||
     options.artifactType === 'satellite-loop' ||
     options.artifactType === 'skewt' ||
-    options.artifactType === 'model-comparison-panel' ||
     options.artifactType === 'brief-report'
   ) {
     return buildPanelFallback(
       app,
       options.artifactType,
-      options.locationQuery,
-      options.prompt,
+      options,
     )
   }
 

@@ -61,4 +61,44 @@ describe('classifyRequest', () => {
       intent: 'tropical',
     })
   })
+
+  it('keeps SPC shorthand in the severe-weather workflow and infers the 3 day window', () => {
+    const classification = classifyRequest('3 day spc chicago')
+
+    expect(classification).toMatchObject({
+      taskClass: 'research',
+      intent: 'severe-weather',
+      locationRequired: true,
+      needsArtifact: false,
+    })
+    expect(classification.timeHorizonHours).toBe(72)
+  })
+
+  it('routes broad model-driven storm hunts into weather analysis', () => {
+    const classification = classifyRequest(
+      'based off current models where are the best storms happening in the next 4 days',
+    )
+
+    expect(classification).toMatchObject({
+      taskClass: 'research',
+      intent: 'weather-analysis',
+      locationRequired: false,
+      needsArtifact: false,
+    })
+    expect(classification.timeHorizonHours).toBe(96)
+  })
+
+  it('routes typo-heavy broad severe prompts into severe-weather research', () => {
+    const classification = classifyRequest(
+      'where are the most severe strorms happening in the nextg 3 days',
+    )
+
+    expect(classification).toMatchObject({
+      taskClass: 'research',
+      intent: 'severe-weather',
+      locationRequired: false,
+      needsArtifact: false,
+    })
+    expect(classification.timeHorizonHours).toBe(72)
+  })
 })

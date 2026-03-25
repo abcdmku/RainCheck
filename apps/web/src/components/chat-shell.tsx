@@ -58,6 +58,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     href: string
     title: string
     mimeType: string
+    imageAlt?: string
   } | null>(null)
   const draftSentRef = useRef(false)
   const hydratedRouteConversationIdRef = useRef<string | null>(null)
@@ -395,7 +396,6 @@ export function ChatShell({ conversationId }: ChatShellProps) {
         <ConversationSidebar
           collapsed={sidebarCollapsed}
           conversations={conversationsQuery.data ?? ([] as Array<Conversation>)}
-
           onCreateConversation={() => void createAndNavigateWithDraft()}
           onOpenSettings={() => setSettingsOpen(true)}
           onToggle={() => setSidebarCollapsed((current) => !current)}

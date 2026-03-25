@@ -51,10 +51,40 @@ const modelOptionsByProvider: Record<
   ],
   gemini: [
     {
+      id: 'gemini-3.1-pro-preview',
+      label: 'Gemini 3.1 Pro',
+      description: 'Frontier reasoning and coding for the hardest chat requests.',
+      model: 'gemini-3.1-pro-preview',
+    },
+    {
+      id: 'gemini-3.1-flash-lite-preview',
+      label: 'Gemini 3.1 Flash-Lite',
+      description: 'High-throughput Gemini 3 chat at the lowest latency and cost.',
+      model: 'gemini-3.1-flash-lite-preview',
+    },
+    {
+      id: 'gemini-3-flash-preview',
+      label: 'Gemini 3 Flash',
+      description: 'Fast Gemini 3 responses with strong search and grounding support.',
+      model: 'gemini-3-flash-preview',
+    },
+    {
       id: 'gemini-2.5-flash',
       label: 'Gemini 2.5 Flash',
       description: 'Quick responses with strong multimodal support.',
       model: 'gemini-2.5-flash',
+    },
+    {
+      id: 'gemini-2.5-pro',
+      label: 'Gemini 2.5 Pro',
+      description: 'Deeper reasoning and coding for harder requests.',
+      model: 'gemini-2.5-pro',
+    },
+    {
+      id: 'gemini-2.5-flash-lite',
+      label: 'Gemini 2.5 Flash-Lite',
+      description: 'Lowest-latency Gemini option for fast, lightweight chats.',
+      model: 'gemini-2.5-flash-lite',
     },
   ],
   openrouter: [

@@ -44,6 +44,7 @@ import {
 } from '../weather/models'
 import { getMrmsProducts } from '../weather/mrms'
 import { getAlerts, getCurrentConditions, getForecast } from '../weather/nws'
+import { previewFromArtifact } from '../weather/previews'
 import { getNexradRadar } from '../weather/radar'
 import { getGoesSatellite } from '../weather/satellite'
 import { generateArtifact } from '../weather/service-client'
@@ -79,7 +80,9 @@ function nowIso() {
   return new Date().toISOString()
 }
 
-function wrapCurrentConditions(result: Awaited<ReturnType<typeof getCurrentConditions>>) {
+function wrapCurrentConditions(
+  result: Awaited<ReturnType<typeof getCurrentConditions>>,
+) {
   const temp = `${result.temperature.value}${result.temperature.unit}`
   const wind =
     result.wind.speed != null
@@ -185,7 +188,10 @@ function wrapAlerts(
   })
 }
 
-function wrapAviation(result: Awaited<ReturnType<typeof getAviationSummary>>, stationId: string) {
+function wrapAviation(
+  result: Awaited<ReturnType<typeof getAviationSummary>>,
+  stationId: string,
+) {
   return buildWeatherEnvelope({
     source: {
       sourceId: 'aviationweather-gov',
@@ -222,11 +228,13 @@ function buildResearchOutline(title: string, focus: string) {
       { heading: 'Setup', summary: focus },
       {
         heading: 'Main risks',
-        summary: 'Highlight the most relevant hazards, timing questions, or source disagreements.',
+        summary:
+          'Highlight the most relevant hazards, timing questions, or source disagreements.',
       },
       {
         heading: 'Uncertainty',
-        summary: 'State what could change and which source should be checked next.',
+        summary:
+          'State what could change and which source should be checked next.',
       },
     ],
   }
@@ -269,7 +277,7 @@ export function buildServerTools(
   )
   const spcSevere = getSpcSevereProductsToolDef.server(
     withProgress('Fetching severe-weather outlooks', ({ locationQuery }) =>
-      getSpcSevereProducts(app, locationQuery),
+      getSpcSevereProducts(app, locationQuery ?? 'United States'),
     ),
   )
   const fireWeather = getFireWeatherProductsToolDef.server(
@@ -289,7 +297,7 @@ export function buildServerTools(
   )
   const wpcMedium = getWpcMediumRangeHazardsToolDef.server(
     withProgress('Fetching medium-range hazards', ({ locationQuery }) =>
-      getWpcMediumRangeHazards(app, locationQuery),
+      getWpcMediumRangeHazards(app, locationQuery ?? 'United States'),
     ),
   )
   const hydrology = getHydrologyNwpsToolDef.server(
@@ -324,12 +332,43 @@ export function buildServerTools(
   )
   const globalModels = getGlobalModelGuidanceToolDef.server(
     withProgress('Fetching global model guidance', ({ locationQuery }) =>
-      getGlobalModelGuidance(app, locationQuery),
+      getGlobalModelGuidance(app, locationQuery ?? 'United States'),
     ),
   )
   const modelComparison = compareModelsToolDef.server(
-    withProgress('Comparing model guidance', async ({ locationName, comparedModels }) =>
-      compareModels(locationName, comparedModels),
+    withProgress(
+      'Comparing model guidance',
+      async ({ locationName, comparedModels }) => {
+        const comparison = compareModels(locationName, comparedModels)
+        const previewArtifact = await generateArtifact(app, {
+          artifactType: 'model-comparison-panel',
+          locationQuery: locationName,
+          prompt: `Model comparison for ${locationName}`,
+          comparisonModels: comparedModels.map((model) => ({
+            sourceId: model.sourceId,
+            modelLabel: model.modelLabel,
+            summary: model.summary,
+            cycleTime: model.runTime,
+            validTime: model.validTime,
+          })),
+        })
+        const artifactHandle = {
+          artifactId: previewArtifact.artifactId,
+          type: String(previewArtifact.type),
+          title: previewArtifact.title,
+          href: previewArtifact.href,
+          mimeType: previewArtifact.mimeType,
+        }
+
+        return {
+          ...comparison,
+          artifacts: [artifactHandle],
+          ...previewFromArtifact(
+            artifactHandle,
+            `Model comparison panel for ${locationName}`,
+          ),
+        }
+      },
     ),
   )
   const tropical = getTropicalWeatherToolDef.server(
@@ -358,17 +397,20 @@ export function buildServerTools(
     ),
   )
   const citations = generateCitationBundleToolDef.server(
-    withProgress('Assembling source bundle', async ({ sourceIds, productIds }) => ({
-      citations: sourceIds.map((sourceId, index) => ({
-        id: `${sourceId}:${productIds[index] ?? 'catalog'}`,
-        label: `${sourceId} ${productIds[index] ?? 'catalog'}`,
-        sourceId,
-        productId: productIds[index] ?? 'catalog',
-      })),
-      manifests: chooseSourceManifests(classification).filter((manifest) =>
-        sourceIds.includes(manifest.sourceId),
-      ),
-    })),
+    withProgress(
+      'Assembling source bundle',
+      async ({ sourceIds, productIds }) => ({
+        citations: sourceIds.map((sourceId, index) => ({
+          id: `${sourceId}:${productIds[index] ?? 'catalog'}`,
+          label: `${sourceId} ${productIds[index] ?? 'catalog'}`,
+          sourceId,
+          productId: productIds[index] ?? 'catalog',
+        })),
+        manifests: chooseSourceManifests(classification).filter((manifest) =>
+          sourceIds.includes(manifest.sourceId),
+        ),
+      }),
+    ),
   )
   const reportOutline = generateReportOutlineToolDef.server(
     withProgress('Planning weather brief', async ({ title, focus }) =>
@@ -376,8 +418,10 @@ export function buildServerTools(
     ),
   )
   const artifact = generateWeatherArtifactToolDef.server(
-    withProgress('Generating weather artifact', ({ artifactType, locationQuery, prompt }) =>
-      generateArtifact(app, { artifactType, locationQuery, prompt }),
+    withProgress(
+      'Generating weather artifact',
+      ({ artifactType, locationQuery, prompt }) =>
+        generateArtifact(app, { artifactType, locationQuery, prompt }),
     ),
   )
 
@@ -403,7 +447,12 @@ export function buildServerTools(
         citations,
       ])
     case 'fire-weather':
-      return buildToolSet(coreTools, [fireWeather, forecast, reportOutline, citations])
+      return buildToolSet(coreTools, [
+        fireWeather,
+        forecast,
+        reportOutline,
+        citations,
+      ])
     case 'precipitation':
       return buildToolSet(coreTools, [
         wpcQpfEro,
@@ -451,7 +500,13 @@ export function buildServerTools(
     case 'satellite':
       return buildToolSet(coreTools, [goes, artifact, citations])
     case 'mrms':
-      return buildToolSet(coreTools, [mrms, nexrad, hydrology, artifact, citations])
+      return buildToolSet(coreTools, [
+        mrms,
+        nexrad,
+        hydrology,
+        artifact,
+        citations,
+      ])
     case 'short-range-model':
       return buildToolSet(coreTools, [
         shortRangeModels,
@@ -486,11 +541,21 @@ export function buildServerTools(
         citations,
       ])
     case 'tropical':
-      return buildToolSet(coreTools, [tropical, reportOutline, artifact, citations])
+      return buildToolSet(coreTools, [
+        tropical,
+        reportOutline,
+        artifact,
+        citations,
+      ])
     case 'marine':
       return buildToolSet(coreTools, [marine, artifact, citations])
     case 'upper-air':
-      return buildToolSet(coreTools, [upperAir, artifact, reportOutline, citations])
+      return buildToolSet(coreTools, [
+        upperAir,
+        artifact,
+        reportOutline,
+        citations,
+      ])
     case 'historical-climate':
       return buildToolSet(coreTools, [
         historicalClimate,

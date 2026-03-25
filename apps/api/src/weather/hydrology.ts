@@ -1,12 +1,14 @@
 import type { FastifyInstance } from 'fastify'
 
 import { geocodeQuery } from './geocode'
+import { previewFromArtifact } from './previews'
 import {
   buildWeatherEnvelope,
   cacheKey,
   fetchWeatherJson,
   type WeatherEnvelope,
 } from './runtime'
+import { generateArtifact } from './service-client'
 
 type GaugeListItem = {
   lid: string
@@ -100,6 +102,16 @@ type HydrologyData = {
   }>
 }
 
+function toChartPoints(
+  series: Array<{ validTime: string; stage: number; flow: number }>,
+  key: 'stage' | 'flow',
+) {
+  return series.slice(0, 8).map((point) => ({
+    label: point.validTime.slice(11, 16),
+    value: point[key],
+  }))
+}
+
 function distanceScore(
   left: { latitude: number; longitude: number },
   right: { latitude: number; longitude: number },
@@ -158,6 +170,19 @@ export async function getHydrologyNwps(
     )[0] ?? null
 
   if (!nearestGauge) {
+    const hydrographArtifact = await generateArtifact(app, {
+      artifactType: 'hydrograph',
+      locationQuery: location.name,
+      prompt: `No nearby NWPS gauge was available for ${location.name}`,
+    })
+    const artifactHandle = {
+      artifactId: hydrographArtifact.artifactId,
+      type: String(hydrographArtifact.type),
+      title: hydrographArtifact.title,
+      href: hydrographArtifact.href,
+      mimeType: hydrographArtifact.mimeType,
+    }
+
     return buildWeatherEnvelope({
       source: gaugeList.source,
       location,
@@ -168,6 +193,10 @@ export async function getHydrologyNwps(
       validAt: gaugeList.retrievedAt,
       confidence: 0.4,
       summary: `NWPS did not return a nearby gauge for ${location.name}.`,
+      ...previewFromArtifact(
+        artifactHandle,
+        `${location.name} hydrology fallback preview`,
+      ),
       data: {
         gauge: {
           lid: 'unknown',
@@ -181,6 +210,7 @@ export async function getHydrologyNwps(
         recentObservedPoints: [],
         recentForecastPoints: [],
       },
+      artifacts: [artifactHandle],
     })
   }
 
@@ -228,6 +258,37 @@ export async function getHydrologyNwps(
       ? `forecast ${forecast.primary} ${stageUnits}`
       : null,
   ].filter(Boolean)
+  const hydrographArtifact = await generateArtifact(app, {
+    artifactType: 'hydrograph',
+    locationQuery: nearestGauge.name,
+    prompt: `Observed and forecast river stage for ${nearestGauge.name}`,
+    chartSeries: [
+      {
+        label: 'Observed stage',
+        color: '#4cc9f0',
+        points: toChartPoints(firstPoints(stageFlow.value.observed?.data, 8), 'stage'),
+      },
+      {
+        label: 'Forecast stage',
+        color: '#79ddd0',
+        points: toChartPoints(firstPoints(stageFlow.value.forecast?.data, 8), 'stage'),
+      },
+    ].filter((series) => series.points.length > 0),
+  })
+  const artifactHandle = {
+    artifactId: hydrographArtifact.artifactId,
+    type: String(hydrographArtifact.type),
+    title: hydrographArtifact.title,
+    href: hydrographArtifact.href,
+    mimeType: hydrographArtifact.mimeType,
+  }
+  const preview = previewFromArtifact(
+    artifactHandle,
+    `${nearestGauge.name} hydrograph`,
+    {
+      severity: forecast?.floodCategory ?? observed?.floodCategory ?? undefined,
+    },
+  )
 
   return buildWeatherEnvelope({
     source: gaugeDetail.source,
@@ -239,6 +300,7 @@ export async function getHydrologyNwps(
     validAt: observed?.validTime ?? stageFlow.value.observed?.issuedTime ?? gaugeDetail.retrievedAt,
     confidence: 0.9,
     summary: `${summaryParts.join(', ')}.`.trim(),
+    ...preview,
     data: {
       gauge: {
         lid: nearestGauge.lid,
@@ -252,6 +314,7 @@ export async function getHydrologyNwps(
       recentObservedPoints: firstPoints(stageFlow.value.observed?.data),
       recentForecastPoints: firstPoints(stageFlow.value.forecast?.data),
     },
+    artifacts: [artifactHandle],
     citations: [
       {
         id: 'nwps:gauge-detail',

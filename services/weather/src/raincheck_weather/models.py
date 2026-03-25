@@ -95,6 +95,11 @@ class WeatherEnvelope(StrictModel):
     data: dict[str, Any] = Field(default_factory=dict)
     citations: list[WeatherCitation] = Field(default_factory=list)
     artifacts: list[ArtifactHandle] = Field(default_factory=list)
+    thumbnailUrl: str | None = None
+    imageAlt: str | None = None
+    previewArtifactId: str | None = None
+    fullArtifactId: str | None = None
+    severity: str | None = None
 
 
 class CitationBundle(StrictModel):
@@ -227,6 +232,7 @@ class LoopFrame(StrictModel):
     label: str
     timestamp: datetime | None = None
     description: str | None = None
+    imageUrl: str | None = None
 
 
 class ComparisonModel(StrictModel):

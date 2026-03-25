@@ -103,6 +103,14 @@ export const weatherArtifactHandleSchema = z.object({
   mimeType: z.string(),
 })
 
+export const weatherPreviewFieldsSchema = z.object({
+  thumbnailUrl: z.string().optional(),
+  imageAlt: z.string().optional(),
+  previewArtifactId: z.string().optional(),
+  fullArtifactId: z.string().optional(),
+  severity: z.string().optional(),
+})
+
 export const weatherValidityRangeSchema = z.object({
   start: z.string(),
   end: z.string(),
@@ -139,6 +147,7 @@ export const weatherToolEnvelopeSchema = z
     citations: z.array(citationSchema),
     artifacts: z.array(weatherArtifactHandleSchema).optional(),
   })
+  .merge(weatherPreviewFieldsSchema)
   .refine(
     (value) => value.validAt !== undefined || value.validRange !== undefined,
     {
@@ -182,4 +191,5 @@ export const modelComparisonSummarySchema = z.object({
   comparedModels: z.array(modelComparisonEntrySchema),
   consensus: z.string(),
   uncertainty: z.string(),
-})
+  artifacts: z.array(weatherArtifactHandleSchema).optional(),
+}).merge(weatherPreviewFieldsSchema)

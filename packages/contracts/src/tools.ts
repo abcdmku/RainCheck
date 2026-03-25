@@ -30,17 +30,29 @@ const weatherLocationQueryInputSchema = z.object({
   locationQuery: z.string(),
 })
 
-const weatherLocationQueryWindowInputSchema = weatherLocationQueryInputSchema.extend(
-  {
+const weatherLocationQueryWindowInputSchema =
+  weatherLocationQueryInputSchema.extend({
     timeHorizonHours: z.number().int().min(0).max(720).optional(),
-  },
-)
+  })
 
-const weatherLocationQueryProductInputSchema = weatherLocationQueryWindowInputSchema.extend(
-  {
+const weatherLocationQueryProductInputSchema =
+  weatherLocationQueryWindowInputSchema.extend({
     product: z.string().optional(),
-  },
-)
+  })
+
+const nationalWeatherLocationQueryInputSchema = z.object({
+  locationQuery: z.string().default('United States'),
+})
+
+const nationalWeatherLocationQueryWindowInputSchema =
+  nationalWeatherLocationQueryInputSchema.extend({
+    timeHorizonHours: z.number().int().min(0).max(720).optional(),
+  })
+
+const nationalWeatherLocationQueryProductInputSchema =
+  nationalWeatherLocationQueryWindowInputSchema.extend({
+    product: z.string().optional(),
+  })
 
 const weatherStationInputSchema = z.object({
   stationId: z.string(),
@@ -108,8 +120,8 @@ export const getAviationSummaryToolDef = getAviationWeatherToolDef
 export const getSpcSevereProductsToolDef = toolDefinition({
   name: 'get_spc_severe_products',
   description:
-    'Fetch severe-weather outlook, watch, mesoanalysis, and mesoscale discussion context for a place or region.',
-  inputSchema: weatherLocationQueryWindowInputSchema,
+    'Fetch official SPC severe-weather outlook, watch, mesoanalysis, and mesoscale discussion context for a place, region, or national request. For nationwide questions, use "United States" as locationQuery.',
+  inputSchema: nationalWeatherLocationQueryWindowInputSchema,
   outputSchema: weatherToolEnvelopeSchema,
 })
 
@@ -123,8 +135,7 @@ export const getSevereSummaryToolDef = toolDefinition({
 
 export const getFireWeatherProductsToolDef = toolDefinition({
   name: 'get_fire_weather_products',
-  description:
-    'Fetch fire-weather outlook context for a place or region.',
+  description: 'Fetch fire-weather outlook context for a place or region.',
   inputSchema: weatherLocationQueryWindowInputSchema,
   outputSchema: weatherToolEnvelopeSchema,
 })
@@ -148,8 +159,8 @@ export const getWpcWinterWeatherToolDef = toolDefinition({
 export const getWpcMediumRangeHazardsToolDef = toolDefinition({
   name: 'get_wpc_medium_range_hazards',
   description:
-    'Fetch WPC medium-range hazards context for a place or region.',
-  inputSchema: weatherLocationQueryWindowInputSchema,
+    'Fetch WPC medium-range hazards context for a place, region, or national request. For nationwide questions, use "United States" as locationQuery.',
+  inputSchema: nationalWeatherLocationQueryWindowInputSchema,
   outputSchema: weatherToolEnvelopeSchema,
 })
 
@@ -195,7 +206,7 @@ export const getMrmsProductsToolDef = toolDefinition({
 export const getShortRangeModelGuidanceToolDef = toolDefinition({
   name: 'get_short_range_model_guidance',
   description:
-    'Fetch short-range model guidance for timing, fog, snow bands, or mesoscale evolution.',
+    'Fetch high-level short-range model guidance context and source links for HRRR, RAP, NAM, and HREF. This tool does not return field-specific HRRR parameters like tornado probability, supercell composite, STP, or convective wording.',
   inputSchema: weatherLocationQueryProductInputSchema,
   outputSchema: weatherToolEnvelopeSchema,
 })
@@ -211,8 +222,8 @@ export const getBlendAndAnalysisGuidanceToolDef = toolDefinition({
 export const getGlobalModelGuidanceToolDef = toolDefinition({
   name: 'get_global_model_guidance',
   description:
-    'Fetch global model guidance for 2 to 10 day synoptic pattern questions.',
-  inputSchema: weatherLocationQueryProductInputSchema,
+    'Fetch global model guidance for 2 to 10 day synoptic pattern questions for a place, region, or the nation. For nationwide questions, use "United States" as locationQuery.',
+  inputSchema: nationalWeatherLocationQueryProductInputSchema,
   outputSchema: weatherToolEnvelopeSchema,
 })
 

@@ -6,6 +6,7 @@ type ArtifactViewerProps = {
     href: string
     title: string
     mimeType: string
+    imageAlt?: string
   } | null
   onClose: () => void
 }
@@ -50,7 +51,7 @@ export function ArtifactViewer({ artifact, onClose }: ArtifactViewerProps) {
         </div>
         {artifact.mimeType.includes('image') ? (
           <img
-            alt={artifact.title}
+            alt={artifact.imageAlt ?? artifact.title}
             className="artifact-media"
             src={artifactUrl}
           />
