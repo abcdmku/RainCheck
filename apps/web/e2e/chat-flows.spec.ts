@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 async function sendPrompt(page: Page, prompt: string) {
   const composer = page.getByLabel('Ask RainCheck about the weather')
@@ -59,4 +59,31 @@ test('research flow reloads an artifact card and opens the viewer', async ({
   await expect(
     page.locator('iframe[title="Research report for Austin, TX"]'),
   ).toBeVisible()
+})
+
+test('conversation history lets you delete a past thread', async ({ page }) => {
+  await page.goto('/chat/thread-research')
+
+  const deleteResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes('/api/conversations/thread-research') &&
+      response.request().method() === 'DELETE',
+  )
+
+  page.once('dialog', async (dialog) => {
+    expect(dialog.type()).toBe('confirm')
+    expect(dialog.message()).toContain('Austin research')
+    await dialog.accept()
+  })
+
+  await page
+    .getByRole('button', { name: 'Delete conversation Austin research' })
+    .click()
+
+  await deleteResponse
+  await page.waitForURL(/\/$/)
+  await expect(page.locator('.conversation-list')).not.toContainText(
+    'Austin research',
+  )
+  await expect(page.locator('.empty-thread .sidebar-brand')).toBeVisible()
 })

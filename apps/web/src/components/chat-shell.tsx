@@ -6,16 +6,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiClient, resolveApiUrl, type SettingsPayload } from '../lib/api'
 import { useRainCheckChat } from '../lib/chat'
 import {
-  loadStoredLocationPreference,
-  saveStoredLocationPreference,
   type ChatLocationOverride,
+  loadStoredLocationPreference,
   type StoredLocationPreference,
+  saveStoredLocationPreference,
 } from '../lib/location'
+import { mapRecordsToUiMessages } from '../lib/messages'
 import {
   findModelOptionByRoute,
   getAvailableModelOptions,
 } from '../lib/model-options'
-import { mapRecordsToUiMessages } from '../lib/messages'
 import { applyTheme, loadTheme } from '../lib/theme'
 import { ArtifactViewer } from './artifact-viewer'
 import { Composer, type ReasoningLevel } from './composer'
@@ -100,6 +100,10 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     },
   })
 
+  const deleteConversationMutation = useMutation({
+    mutationFn: (id: string) => apiClient.deleteConversation(id),
+  })
+
   const initialMessages = useMemo<Array<UIMessage>>(
     () =>
       conversationQuery.data
@@ -118,7 +122,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
       findModelOptionByRoute(availableModelOptions, selectedRoute) ??
       availableModelOptions[0] ??
       null,
-    [availableModelOptions, selectedRoute.model, selectedRoute.provider],
+    [availableModelOptions, selectedRoute],
   )
 
   /* ── Build user message history (most recent first) ── */
@@ -275,7 +279,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
       provider: fallbackOption.provider,
       model: fallbackOption.model,
     })
-  }, [availableModelOptions, selectedRoute.model, selectedRoute.provider])
+  }, [availableModelOptions, selectedRoute])
 
   useEffect(() => {
     const mode = loadTheme()
@@ -468,6 +472,34 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     })
   }
 
+  async function handleDeleteConversation(conversation: Conversation) {
+    const confirmed = window.confirm(
+      `Delete "${conversation.title}"? This cannot be undone.`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      await deleteConversationMutation.mutateAsync(conversation.id)
+      queryClient.removeQueries({
+        queryKey: ['conversation', conversation.id],
+      })
+      await queryClient.invalidateQueries({ queryKey: ['conversations'] })
+
+      if (conversationId === conversation.id) {
+        hydratedRouteConversationIdRef.current = null
+        syncedConversationSnapshotRef.current = null
+        draftSentRef.current = false
+        setProgressLabels([])
+        setSelectedArtifact(null)
+        navigate({ to: '/' })
+      }
+    } catch {
+      window.alert('Could not delete that conversation. Please try again.')
+    }
+  }
+
   async function submitComposer() {
     const trimmed = composerValue.trim()
     if (!trimmed) {
@@ -536,8 +568,16 @@ export function ChatShell({ conversationId }: ChatShellProps) {
           collapsed={sidebarCollapsed}
           conversations={conversationsQuery.data ?? ([] as Array<Conversation>)}
           onCreateConversation={() => void createAndNavigateWithDraft()}
+          onDeleteConversation={(conversation) =>
+            void handleDeleteConversation(conversation)
+          }
           onOpenSettings={() => setSettingsOpen(true)}
           onToggle={() => setSidebarCollapsed((current) => !current)}
+          deletingConversationId={
+            deleteConversationMutation.isPending
+              ? (deleteConversationMutation.variables ?? null)
+              : null
+          }
         />
 
         <main className="thread-shell">

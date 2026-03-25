@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify'
 
 import {
   createConversation,
+  deleteConversation,
   getConversation,
   listConversations,
 } from '../services/conversations-service'
@@ -28,5 +29,16 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
 
     return conversation
+  })
+
+  app.delete('/api/conversations/:id', async (request, reply) => {
+    const params = request.params as { id: string }
+    const deleted = await deleteConversation(app, params.id)
+    if (!deleted) {
+      reply.status(404)
+      return { error: 'Conversation not found' }
+    }
+
+    return reply.status(204).send()
   })
 }

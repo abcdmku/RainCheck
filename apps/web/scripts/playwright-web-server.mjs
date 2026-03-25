@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process'
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const appRoot = resolve(__dirname, '..')
@@ -270,20 +270,32 @@ const apiServer = createServer(async (request, response) => {
     return
   }
 
-  if (
-    request.method === 'GET' &&
-    url.pathname.startsWith('/api/conversations/')
-  ) {
+  if (url.pathname.startsWith('/api/conversations/')) {
     const id = url.pathname.split('/').at(-1) ?? ''
     const entry = conversations.get(id)
 
-    if (!entry) {
-      writeJson(response, 404, { error: 'Conversation not found' })
+    if (request.method === 'DELETE') {
+      if (!entry) {
+        writeJson(response, 404, { error: 'Conversation not found' })
+        return
+      }
+
+      conversations.delete(id)
+      applyCors(response)
+      response.writeHead(204)
+      response.end()
       return
     }
 
-    writeJson(response, 200, entry)
-    return
+    if (request.method === 'GET') {
+      if (!entry) {
+        writeJson(response, 404, { error: 'Conversation not found' })
+        return
+      }
+
+      writeJson(response, 200, entry)
+      return
+    }
   }
 
   if (request.method === 'GET' && url.pathname.startsWith('/api/artifacts/')) {

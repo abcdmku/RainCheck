@@ -31,6 +31,12 @@ async function readJson<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>
 }
 
+function assertOk(response: Response) {
+  if (!response.ok) {
+    throw new Error(`Request failed with ${response.status}`)
+  }
+}
+
 export class RainCheckClient {
   private readonly baseUrl: string
   private readonly fetcher: typeof fetch
@@ -69,6 +75,17 @@ export class RainCheckClient {
       `${this.baseUrl}/api/conversations/${id}`,
     )
     return readJson(response)
+  }
+
+  async deleteConversation(id: string): Promise<void> {
+    const response = await this.fetcher(
+      `${this.baseUrl}/api/conversations/${id}`,
+      {
+        method: 'DELETE',
+      },
+    )
+
+    assertOk(response)
   }
 
   async getSettings(): Promise<SettingsPayload> {

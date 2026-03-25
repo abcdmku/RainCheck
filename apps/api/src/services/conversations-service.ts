@@ -112,6 +112,28 @@ export async function getConversation(
   }
 }
 
+export async function deleteConversation(
+  app: FastifyInstance,
+  conversationId: string,
+) {
+  const [conversation] = await app.raincheckDb
+    .select({
+      id: conversationsTable.id,
+    })
+    .from(conversationsTable)
+    .where(eq(conversationsTable.id, conversationId))
+
+  if (!conversation) {
+    return false
+  }
+
+  await app.raincheckDb
+    .delete(conversationsTable)
+    .where(eq(conversationsTable.id, conversationId))
+
+  return true
+}
+
 function zodArrayParse<T>(
   values: Array<unknown>,
   schema: { parse: (value: unknown) => T },
