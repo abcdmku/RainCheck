@@ -101,4 +101,18 @@ describe('classifyRequest', () => {
     })
     expect(classification.timeHorizonHours).toBe(72)
   })
+
+  it('keeps HRRR tornado chase prompts in the severe-weather workflow', () => {
+    const classification = classifyRequest(
+      'in central IL where should i head and what time according to the HRRR model to see tornados',
+    )
+
+    expect(classification).toMatchObject({
+      taskClass: 'research',
+      intent: 'severe-weather',
+      locationRequired: true,
+      needsArtifact: false,
+    })
+    expect(classification.timeHorizonHours).toBe(6)
+  })
 })

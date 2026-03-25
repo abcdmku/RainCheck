@@ -11,6 +11,8 @@ export async function registerChatRoutes(app: FastifyInstance) {
       model?: string
       locationOverride?: {
         label?: string
+        latitude?: number
+        longitude?: number
       }
       data?: {
         conversationId?: string
@@ -18,6 +20,8 @@ export async function registerChatRoutes(app: FastifyInstance) {
         model?: string
         locationOverride?: {
           label?: string
+          latitude?: number
+          longitude?: number
         }
       }
     }
@@ -27,7 +31,8 @@ export async function registerChatRoutes(app: FastifyInstance) {
       messages: Array.isArray(rawBody.messages) ? rawBody.messages : [],
       provider: rawBody.provider ?? rawBody.data?.provider,
       model: rawBody.model ?? rawBody.data?.model,
-      locationOverride: rawBody.locationOverride ?? rawBody.data?.locationOverride,
+      locationOverride:
+        rawBody.locationOverride ?? rawBody.data?.locationOverride,
     }
     const result = await app.raincheckChatHandler(app, body)
     reply.header('x-raincheck-route', JSON.stringify(result.route))

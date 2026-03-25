@@ -20,6 +20,11 @@ type ChatHandler = (
     messages: Array<any>
     provider?: 'openai' | 'anthropic' | 'gemini' | 'openrouter'
     model?: string
+    locationOverride?: {
+      label?: string
+      latitude?: number
+      longitude?: number
+    }
   },
 ) => Promise<{
   route: Record<string, unknown>

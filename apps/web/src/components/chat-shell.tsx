@@ -2,10 +2,15 @@ import type { Conversation, ProviderId } from '@raincheck/contracts'
 import type { UIMessage } from '@tanstack/ai'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { MapPin, Settings2 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiClient, resolveApiUrl, type SettingsPayload } from '../lib/api'
 import { useRainCheckChat } from '../lib/chat'
+import {
+  loadStoredLocationPreference,
+  saveStoredLocationPreference,
+  type ChatLocationOverride,
+  type StoredLocationPreference,
+} from '../lib/location'
 import {
   findModelOptionByRoute,
   getAvailableModelOptions,
@@ -13,7 +18,7 @@ import {
 import { mapRecordsToUiMessages } from '../lib/messages'
 import { applyTheme, loadTheme } from '../lib/theme'
 import { ArtifactViewer } from './artifact-viewer'
-import { Composer } from './composer'
+import { Composer, type ReasoningLevel } from './composer'
 import { ConversationSidebar } from './conversation-sidebar'
 import { MessageView } from './message-view'
 import { SettingsPanel } from './settings-panel'
@@ -34,6 +39,7 @@ type RouteSelection = {
 type PendingDraft = RouteSelection & {
   conversationId: string
   text: string
+  locationOverride?: ChatLocationOverride | null
 }
 
 const defaultRouteSelection: RouteSelection = {
@@ -48,7 +54,6 @@ export function ChatShell({ conversationId }: ChatShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [composerValue, setComposerValue] = useState('')
-  const [editingLabel, setEditingLabel] = useState<string | null>(null)
   const [selectedRoute, setSelectedRoute] = useState<RouteSelection>(
     defaultRouteSelection,
   )
@@ -60,6 +65,12 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     mimeType: string
     imageAlt?: string
   } | null>(null)
+  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>('none')
+  const [locationPreference, setLocationPreference] =
+    useState<StoredLocationPreference | null>(() =>
+      loadStoredLocationPreference(),
+    )
+
   const draftSentRef = useRef(false)
   const hydratedRouteConversationIdRef = useRef<string | null>(null)
   const syncedConversationSnapshotRef = useRef<string | null>(null)
@@ -110,15 +121,84 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     [availableModelOptions, selectedRoute.model, selectedRoute.provider],
   )
 
-  const modelPickerPlaceholder = settingsQuery.isLoading
-    ? 'Loading...'
-    : 'No provider'
+  /* ── Build user message history (most recent first) ── */
+
+  const userMessageHistory = useMemo(() => {
+    const messages = conversationId
+      ? (conversationQuery.data?.messages ?? [])
+      : []
+    return messages
+      .filter((m) => m.role === 'user')
+      .map((m) => {
+        const parts = m.parts ?? []
+        return parts
+          .filter((p: any) => p.type === 'text')
+          .map((p: any) => p.content ?? p.text ?? '')
+          .join('')
+      })
+      .filter(Boolean)
+      .reverse()
+  }, [conversationId, conversationQuery.data?.messages])
+
+  const effectiveLocationOverride = useMemo<ChatLocationOverride | null>(() => {
+    if (locationPreference?.mode === 'custom') {
+      return locationPreference.value
+    }
+
+    if (locationPreference?.mode === 'cleared') {
+      return null
+    }
+
+    const defaultLocationLabel =
+      settingsQuery.data?.defaultLocationLabel?.trim()
+    return defaultLocationLabel
+      ? {
+          label: defaultLocationLabel,
+        }
+      : null
+  }, [locationPreference, settingsQuery.data?.defaultLocationLabel])
+
+  const canAutoDetectLocation = useMemo(
+    () =>
+      !effectiveLocationOverride &&
+      locationPreference == null &&
+      settingsQuery.isFetched &&
+      !settingsQuery.data?.defaultLocationLabel,
+    [
+      effectiveLocationOverride,
+      locationPreference,
+      settingsQuery.isFetched,
+      settingsQuery.data?.defaultLocationLabel,
+    ],
+  )
+
+  const handleLocationChange = useCallback(
+    (next: ChatLocationOverride | null) => {
+      if (!next) {
+        setLocationPreference({
+          mode: 'cleared',
+        })
+        return
+      }
+
+      setLocationPreference({
+        mode: 'custom',
+        value: next,
+      })
+    },
+    [],
+  )
+
+  useEffect(() => {
+    saveStoredLocationPreference(locationPreference)
+  }, [locationPreference])
 
   const chat = useRainCheckChat({
     conversationId: conversationId ?? 'draft',
     initialMessages,
     provider: selectedRoute.provider,
     model: selectedRoute.model,
+    locationOverride: effectiveLocationOverride ?? undefined,
     onCustomEvent: (eventType: string, data: unknown) => {
       if (eventType === 'tool-progress') {
         setProgressLabels((current) => [
@@ -127,10 +207,13 @@ export function ChatShell({ conversationId }: ChatShellProps) {
         ])
       }
     },
+    onError: () => {
+      setProgressLabels([])
+    },
     onFinish: async () => {
       setProgressLabels([])
       setComposerValue('')
-      setEditingLabel(null)
+
       await queryClient.invalidateQueries({ queryKey: ['conversations'] })
       if (conversationId) {
         await queryClient.invalidateQueries({
@@ -279,6 +362,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
       text: parsed.text,
       provider: parsed.provider ?? selectedRoute.provider,
       model: parsed.model ?? selectedRoute.model,
+      locationOverride: parsed.locationOverride ?? null,
     }
 
     if (
@@ -318,7 +402,14 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     }
 
     setPendingDraft(null)
-    void chat.sendMessage(pendingDraft.text)
+    void chat.sendMessage(
+      pendingDraft.text,
+      pendingDraft.locationOverride
+        ? {
+            locationOverride: pendingDraft.locationOverride,
+          }
+        : undefined,
+    )
   }, [
     chat,
     conversationId,
@@ -332,14 +423,34 @@ export function ChatShell({ conversationId }: ChatShellProps) {
   })
 
   const messages = conversationId ? chat.messages : []
-  const currentConversation = conversationsQuery.data?.find(
-    (conversation) => conversation.id === conversationId,
-  )
+
+  async function resolveMessageLocationOverride() {
+    if (effectiveLocationOverride) {
+      return effectiveLocationOverride
+    }
+
+    if (locationPreference == null && !settingsQuery.isFetched) {
+      const settings = await queryClient.ensureQueryData({
+        queryKey: ['settings'],
+        queryFn: () => apiClient.getSettings(),
+      })
+
+      const defaultLocationLabel = settings.defaultLocationLabel?.trim()
+      if (defaultLocationLabel) {
+        return {
+          label: defaultLocationLabel,
+        } satisfies ChatLocationOverride
+      }
+    }
+
+    return null
+  }
 
   async function createAndNavigateWithDraft(text?: string) {
     const conversation = await apiClient.createConversation()
     await queryClient.invalidateQueries({ queryKey: ['conversations'] })
     if (text) {
+      const locationOverride = await resolveMessageLocationOverride()
       window.sessionStorage.setItem(
         pendingDraftKey(),
         JSON.stringify({
@@ -347,6 +458,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
           text,
           provider: selectedRoute.provider,
           model: selectedRoute.model,
+          locationOverride,
         }),
       )
     }
@@ -362,12 +474,39 @@ export function ChatShell({ conversationId }: ChatShellProps) {
       return
     }
 
+    // Instantly clear input (optimistic)
+    setComposerValue('')
+
     if (!conversationId) {
       await createAndNavigateWithDraft(trimmed)
       return
     }
 
-    await chat.sendMessage(trimmed)
+    const messageLocationOverride = await resolveMessageLocationOverride()
+
+    await chat.sendMessage(
+      trimmed,
+      messageLocationOverride
+        ? {
+            locationOverride: messageLocationOverride,
+          }
+        : undefined,
+    )
+  }
+
+  async function handleEditAndResend(messageId: string, newText: string) {
+    if (!conversationId || !newText) return
+
+    // Find the message index, truncate messages back to that point, and resend
+    const messageIndex = chat.messages.findIndex((m: any) => m.id === messageId)
+    if (messageIndex < 0) return
+
+    // Keep messages up to (not including) the edited message
+    const truncated = chat.messages.slice(0, messageIndex)
+    chat.setMessages(truncated)
+
+    // Send the new text
+    await chat.sendMessage(newText)
   }
 
   async function storeByok(providerId: string, apiKey: string) {
@@ -402,61 +541,6 @@ export function ChatShell({ conversationId }: ChatShellProps) {
         />
 
         <main className="thread-shell">
-          <header className="thread-header">
-            <div className="thread-header-title">
-              <h1>{currentConversation?.title ?? 'New thread'}</h1>
-              {settingsQuery.data?.defaultLocationLabel ? (
-                <p>
-                  <MapPin size={12} />
-                  {settingsQuery.data.defaultLocationLabel}
-                </p>
-              ) : null}
-            </div>
-
-            <div className="thread-controls">
-              <select
-                aria-label="Chat model"
-                disabled={availableModelOptions.length === 0}
-                value={selectedModelOption?.id ?? ''}
-                onChange={(event) => {
-                  const nextOption = availableModelOptions.find(
-                    (option) => option.id === event.target.value,
-                  )
-
-                  if (!nextOption) {
-                    return
-                  }
-
-                  setSelectedRoute({
-                    provider: nextOption.provider,
-                    model: nextOption.model,
-                  })
-                }}
-              >
-                {availableModelOptions.length === 0 ? (
-                  <option value="">{modelPickerPlaceholder}</option>
-                ) : (
-                  availableModelOptions.map((option) => (
-                    <option
-                      key={`${option.provider}:${option.model}`}
-                      value={option.id}
-                    >
-                      {option.label}
-                    </option>
-                  ))
-                )}
-              </select>
-              <button
-                aria-label="Open settings"
-                className="ghost-icon-button"
-                onClick={() => setSettingsOpen(true)}
-                type="button"
-              >
-                <Settings2 size={16} />
-              </button>
-            </div>
-          </header>
-
           <section className="thread-messages">
             {messages.length === 0 ? (
               <div className="empty-thread">
@@ -471,13 +555,17 @@ export function ChatShell({ conversationId }: ChatShellProps) {
                       .slice(index + 1)
                       .every((item: any) => item.role !== 'assistant')
                   }
+                  isStreaming={
+                    chat.isLoading &&
+                    message.role === 'assistant' &&
+                    index === messages.length - 1
+                  }
                   key={message.id}
                   message={message}
                   onCopy={(text) => navigator.clipboard.writeText(text)}
-                  onEdit={(text) => {
-                    setComposerValue(text)
-                    setEditingLabel(text)
-                  }}
+                  onEditAndResend={(messageId, newText) =>
+                    void handleEditAndResend(messageId, newText)
+                  }
                   onOpenArtifact={setSelectedArtifact}
                   onRetry={() => void chat.reload()}
                 />
@@ -492,18 +580,34 @@ export function ChatShell({ conversationId }: ChatShellProps) {
                 ))}
               </div>
             ) : null}
+            {chat.error ? (
+              <div className="progress-rail">
+                <span className="progress-pill">
+                  Request failed. Try again.
+                </span>
+              </div>
+            ) : null}
             <div ref={messageEndRef} />
           </section>
 
           <Composer
-            editingLabel={editingLabel}
             isLoading={chat.isLoading}
-            onCancelEdit={() => {
-              setComposerValue('')
-              setEditingLabel(null)
-            }}
+            canAutoDetectLocation={canAutoDetectLocation}
+            locationLabel={effectiveLocationOverride?.label ?? null}
+            messageHistory={userMessageHistory}
+            modelOptions={availableModelOptions}
             onChange={setComposerValue}
+            onLocationChange={handleLocationChange}
+            onModelChange={(option) =>
+              setSelectedRoute({
+                provider: option.provider,
+                model: option.model,
+              })
+            }
+            onReasoningLevelChange={setReasoningLevel}
             onSubmit={() => void submitComposer()}
+            reasoningLevel={reasoningLevel}
+            selectedModel={selectedModelOption}
             value={composerValue}
           />
         </main>

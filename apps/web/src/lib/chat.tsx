@@ -7,6 +7,7 @@ import {
 import { clientTools, fetchServerSentEvents } from '@tanstack/ai-client'
 import { useChat } from '@tanstack/ai-react'
 import { resolveApiUrl } from './api'
+import type { ChatLocationOverride } from './location'
 
 const geolocationTool = requestGeolocationPermissionToolDef.client(async () => {
   const position = await new Promise<GeolocationPosition>((resolve, reject) => {
@@ -53,12 +54,13 @@ export function useRainCheckChat(options: {
   initialMessages: Array<any>
   provider?: string
   model?: string
-  locationOverride?: { label: string }
+  locationOverride?: ChatLocationOverride
   onCustomEvent?: (
     eventType: string,
     data: unknown,
     context?: { toolCallId?: string },
   ) => void
+  onError?: (error: Error) => void
   onFinish?: () => void
 }) {
   return useChat<any>({
@@ -78,6 +80,7 @@ export function useRainCheckChat(options: {
       savePreferenceTool,
     ),
     onCustomEvent: options.onCustomEvent,
+    onError: options.onError,
     onFinish: () => {
       options.onFinish?.()
     },

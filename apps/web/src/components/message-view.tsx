@@ -1,5 +1,6 @@
 import type { UIMessage } from '@tanstack/ai'
-import { Copy, RotateCcw, SquarePen } from 'lucide-react'
+import { Check, Copy, RotateCcw, SquarePen, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { Streamdown } from 'streamdown'
 
 import { resolveApiUrl } from '../lib/api'
@@ -800,84 +801,200 @@ function ToolOutput({
   )
 }
 
+/* ── Inline edit textarea ────────────────────── */
+
+function InlineEdit({
+  initialText,
+  onSave,
+  onCancel,
+}: {
+  initialText: string
+  onSave: (text: string) => void
+  onCancel: () => void
+}) {
+  const [draft, setDraft] = useState(initialText)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    const el = textareaRef.current
+    if (el) {
+      el.focus()
+      el.style.height = 'auto'
+      el.style.height = `${el.scrollHeight}px`
+      el.setSelectionRange(el.value.length, el.value.length)
+    }
+  }, [])
+
+  return (
+    <div className="inline-edit">
+      <textarea
+        ref={textareaRef}
+        className="inline-edit-input"
+        onChange={(e) => {
+          setDraft(e.target.value)
+          e.target.style.height = 'auto'
+          e.target.style.height = `${e.target.scrollHeight}px`
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            onSave(draft.trim())
+          }
+          if (e.key === 'Escape') {
+            onCancel()
+          }
+        }}
+        value={draft}
+      />
+      <div className="inline-edit-actions">
+        <button
+          className="ghost-icon-button"
+          onClick={onCancel}
+          type="button"
+          aria-label="Cancel edit"
+        >
+          <X size={14} />
+        </button>
+        <button
+          className="ghost-icon-button"
+          disabled={!draft.trim()}
+          onClick={() => onSave(draft.trim())}
+          type="button"
+          aria-label="Save edit"
+        >
+          <Check size={14} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/* ── Main MessageView ────────────────────────── */
+
 export function MessageView({
   message,
   isLastAssistant,
+  isStreaming,
   onCopy,
-  onEdit,
+  onEditAndResend,
   onRetry,
   onOpenArtifact,
 }: {
   message: UIMessage
   isLastAssistant: boolean
+  isStreaming?: boolean
   onCopy: (text: string) => void
-  onEdit: (text: string) => void
+  onEditAndResend: (messageId: string, newText: string) => void
   onRetry: () => void
   onOpenArtifact: (artifact: OpenableArtifact) => void
 }) {
+  const [editing, setEditing] = useState(false)
   const text = getMessageText(message as any)
-  const toolParts = message.parts.filter(
-    (part): part is any => part.type === 'tool-call',
-  )
-  const hasTools = toolParts.length > 0
+
+  const hasTools = message.parts.some((part: any) => part.type === 'tool-call')
+
+  // For assistant messages: render parts in order (tools first if they come first,
+  // text after). We respect the original part order from the stream.
+  const isAssistant = message.role === 'assistant'
+  const isUser = message.role === 'user'
+
+  // Detect "thinking" state: assistant message that is streaming with no text yet
+  const isThinking = isAssistant && isStreaming && !text && !hasTools
+
+  const actionsRow = !editing ? (
+    <div className="message-actions">
+      <button
+        aria-label="Copy message"
+        className="ghost-icon-button"
+        onClick={() => onCopy(text)}
+        type="button"
+      >
+        <Copy size={14} />
+      </button>
+      {isUser ? (
+        <button
+          aria-label="Edit message"
+          className="ghost-icon-button"
+          onClick={() => setEditing(true)}
+          type="button"
+        >
+          <SquarePen size={14} />
+        </button>
+      ) : null}
+      {isAssistant && isLastAssistant ? (
+        <button
+          aria-label="Retry response"
+          className="ghost-icon-button"
+          onClick={onRetry}
+          type="button"
+        >
+          <RotateCcw size={14} />
+        </button>
+      ) : null}
+    </div>
+  ) : null
 
   return (
-    <article
-      className={
-        message.role === 'user' ? 'message-row is-user' : 'message-row'
-      }
-    >
-      <div
-        className={
-          message.role === 'user' ? 'message-bubble is-user' : 'message-bubble'
-        }
-      >
-        {text ? (
-          <div className="message-markdown">
-            <Streamdown>{text}</Streamdown>
-          </div>
-        ) : null}
-        {hasTools ? (
-          <div className="tool-section">
-            {toolParts.map((part) => (
-              <ToolOutput
-                key={part.id}
-                onOpenArtifact={onOpenArtifact}
-                part={part}
-              />
-            ))}
-          </div>
-        ) : null}
-        <div className="message-actions">
-          <button
-            aria-label="Copy message"
-            className="ghost-icon-button"
-            onClick={() => onCopy(text)}
-            type="button"
-          >
-            <Copy size={14} />
-          </button>
-          {message.role === 'user' ? (
-            <button
-              aria-label="Edit message"
-              className="ghost-icon-button"
-              onClick={() => onEdit(text)}
-              type="button"
-            >
-              <SquarePen size={14} />
-            </button>
-          ) : null}
-          {message.role === 'assistant' && isLastAssistant ? (
-            <button
-              aria-label="Retry response"
-              className="ghost-icon-button"
-              onClick={onRetry}
-              type="button"
-            >
-              <RotateCcw size={14} />
-            </button>
-          ) : null}
+    <article className={isUser ? 'message-row is-user' : 'message-row'}>
+      <div className={isUser ? 'message-wrap is-user' : 'message-wrap'}>
+        <div className={isUser ? 'message-bubble is-user' : 'message-bubble'}>
+          {isUser && editing ? (
+            <InlineEdit
+              initialText={text}
+              onCancel={() => setEditing(false)}
+              onSave={(newText) => {
+                setEditing(false)
+                if (newText && newText !== text) {
+                  onEditAndResend(message.id, newText)
+                }
+              }}
+            />
+          ) : (
+            <>
+              {isThinking ? (
+                <div className="thinking-indicator">
+                  <span className="thinking-dot" />
+                  <span className="thinking-dot" />
+                  <span className="thinking-dot" />
+                </div>
+              ) : null}
+
+              {isAssistant ? (
+                /* Assistant: render parts in stream order */
+                message.parts.map((part: any) => {
+                  if (part.type === 'text') {
+                    const partText = part.content ?? part.text ?? ''
+                    return partText ? (
+                      <div className="message-markdown" key={part.id ?? `text-${partText.slice(0, 20)}`}>
+                        <Streamdown>{partText}</Streamdown>
+                      </div>
+                    ) : null
+                  }
+                  if (part.type === 'tool-call') {
+                    return (
+                      <ToolOutput
+                        key={part.id}
+                        onOpenArtifact={onOpenArtifact}
+                        part={part}
+                      />
+                    )
+                  }
+                  return null
+                })
+              ) : (
+                /* User: just text */
+                text ? (
+                  <div className="message-markdown">
+                    <Streamdown>{text}</Streamdown>
+                  </div>
+                ) : null
+              )}
+            </>
+          )}
         </div>
+
+        {/* Actions always outside the bubble */}
+        {actionsRow}
       </div>
     </article>
   )

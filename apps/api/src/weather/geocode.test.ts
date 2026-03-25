@@ -131,6 +131,39 @@ describe('geocodeQuery', () => {
     })
   })
 
+  it('falls back from regional state shorthand to a state-level location', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ result: { addressMatches: [] } }))
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+      .mockResolvedValueOnce(jsonResponse({ result: { addressMatches: [] } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          results: [
+            {
+              name: 'Illinois',
+              latitude: 40.0,
+              longitude: -89.0,
+              country: 'United States',
+              country_code: 'US',
+            },
+          ],
+        }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const location = await geocodeQuery(app, 'central IL')
+
+    expect(location).toMatchObject({
+      query: 'central IL',
+      name: 'Illinois, United States',
+      latitude: 40.0,
+      longitude: -89.0,
+      country: 'United States',
+      resolvedBy: 'open-meteo-geocoding',
+    })
+  })
+
   it('returns a location_resolution_failed error for upstream outages', async () => {
     const fetchMock = vi
       .fn()

@@ -34,6 +34,47 @@ function extractTextContent(message: any) {
   return ''
 }
 
+function sanitizeGeminiMessageParts(parts: Array<any>) {
+  return parts.filter(
+    (part) => part?.type !== 'tool-call' && part?.type !== 'tool-result',
+  )
+}
+
+export function prepareMessagesForProvider(
+  messages: Array<any>,
+  provider: 'openai' | 'anthropic' | 'gemini' | 'openrouter',
+) {
+  if (provider !== 'gemini') {
+    return messages
+  }
+
+  return messages
+    .map((message) => {
+      if (!Array.isArray(message?.parts)) {
+        return message
+      }
+
+      const parts = sanitizeGeminiMessageParts(message.parts)
+      const textContent = extractTextContent({
+        ...message,
+        parts,
+      })
+
+      if (parts.length === 0 && !textContent) {
+        return null
+      }
+
+      return {
+        ...message,
+        parts,
+        ...(typeof message.content === 'string' || textContent
+          ? { content: textContent }
+          : {}),
+      }
+    })
+    .filter(Boolean)
+}
+
 function buildMiddleware(app: FastifyInstance) {
   return [
     {
@@ -225,7 +266,11 @@ async function* streamAndPersist(
       model: string
     }
     classification: RequestClassification
-    locationHint?: string
+    locationHint?: {
+      label?: string
+      latitude?: number
+      longitude?: number
+    }
     stream: AsyncIterable<StreamChunk>
   },
 ) {
@@ -289,6 +334,8 @@ export async function handleChatRequest(
     model?: string
     locationOverride?: {
       label?: string
+      latitude?: number
+      longitude?: number
     }
   },
 ) {
@@ -312,13 +359,15 @@ export async function handleChatRequest(
 
   const adapter = await buildAdapter(app, route)
   const tools = buildServerTools(app, classification)
+  const preparedMessages = prepareMessagesForProvider(
+    body.messages,
+    route.provider,
+  )
   const stream = chat({
     adapter,
-    messages: body.messages as any,
+    messages: preparedMessages as any,
     tools,
-    systemPrompts: [
-      buildSystemPrompt(classification, body.locationOverride?.label),
-    ],
+    systemPrompts: [buildSystemPrompt(classification, body.locationOverride)],
     conversationId: body.conversationId,
     middleware: buildMiddleware(app) as any,
     agentLoopStrategy: maxIterations(8),
@@ -331,7 +380,7 @@ export async function handleChatRequest(
       conversationId: body.conversationId,
       route,
       classification,
-      locationHint: body.locationOverride?.label,
+      locationHint: body.locationOverride,
       stream,
     }),
   }

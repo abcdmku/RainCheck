@@ -73,7 +73,7 @@ const weatherArtifactRequestInputSchema = z.object({
 export const resolveLocationToolDef = toolDefinition({
   name: 'resolve_location',
   description:
-    'Normalize a place, address-like query, or lat/lon pair into a canonical weather location.',
+    'Normalize only a place string, address-like query, or lat/lon pair into a canonical weather location. Do not pass the entire weather question.',
   inputSchema: z.object({
     query: z.string(),
   }),
@@ -315,7 +315,7 @@ export const generateArtifactToolDef = generateWeatherArtifactToolDef
 export const requestGeolocationPermissionToolDef = toolDefinition({
   name: 'request_geolocation_permission',
   description:
-    'Ask the browser or device for a current location to use in the thread.',
+    'Ask the browser or device for a current location when a weather request needs a place and the user did not provide one.',
   inputSchema: z.object({}),
   outputSchema: locationContextSchema,
 })

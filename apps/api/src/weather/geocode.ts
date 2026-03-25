@@ -60,6 +60,13 @@ const usStatesByCode = {
   DC: 'District of Columbia',
 } as const
 
+const usStateCodesByName = Object.fromEntries(
+  Object.entries(usStatesByCode).map(([code, name]) => [
+    name.toLowerCase(),
+    code,
+  ]),
+) as Record<string, keyof typeof usStatesByCode>
+
 type CensusResponse = {
   result: {
     addressMatches: Array<{
@@ -180,6 +187,32 @@ function buildOpenMeteoHints(query: string) {
     seen.add(key)
     return true
   })
+}
+
+function buildRegionalUsStateFallback(query: string) {
+  const match = query
+    .trim()
+    .match(
+      /^(north|northern|south|southern|east|eastern|west|western|central)\s+(.+)$/i,
+    )
+
+  if (!match?.[2]) {
+    return null
+  }
+
+  const stateToken = match[2].trim().replace(/\.+$/, '')
+  const upperStateToken = stateToken.toUpperCase()
+
+  if (upperStateToken in usStatesByCode) {
+    return usStatesByCode[upperStateToken as keyof typeof usStatesByCode]
+  }
+
+  const stateCode = usStateCodesByName[stateToken.toLowerCase()]
+  if (stateCode) {
+    return usStatesByCode[stateCode]
+  }
+
+  return null
 }
 
 function pickOpenMeteoResult(
@@ -311,7 +344,10 @@ async function resolveWithOpenMeteo(app: FastifyInstance, query: string) {
       ),
       ttlMs: 30 * 60 * 1000,
     })
-    const match = pickOpenMeteoResult(response.value.results ?? [], attempt.hint)
+    const match = pickOpenMeteoResult(
+      response.value.results ?? [],
+      attempt.hint,
+    )
 
     if (!match) {
       continue
@@ -351,6 +387,7 @@ function toProviderFailure(provider: string, error: unknown) {
 export async function geocodeQuery(app: FastifyInstance, query: string) {
   const trimmed = query.trim()
   const latLonMatch = trimmed.match(latLonPattern)
+  const regionalStateFallback = buildRegionalUsStateFallback(trimmed)
   const failures: Array<ReturnType<typeof toProviderFailure>> = []
 
   if (!trimmed) {
@@ -388,6 +425,35 @@ export async function geocodeQuery(app: FastifyInstance, query: string) {
     }
   } catch (error) {
     failures.push(toProviderFailure('open-meteo-geocoding', error))
+  }
+
+  if (
+    regionalStateFallback &&
+    regionalStateFallback.toLowerCase() !== trimmed.toLowerCase()
+  ) {
+    try {
+      const census = await resolveWithCensus(app, regionalStateFallback)
+      if (census) {
+        return normalizedLocationSchema.parse({
+          ...census,
+          query: trimmed,
+        })
+      }
+    } catch (error) {
+      failures.push(toProviderFailure('us-census-geocoder', error))
+    }
+
+    try {
+      const openMeteo = await resolveWithOpenMeteo(app, regionalStateFallback)
+      if (openMeteo) {
+        return normalizedLocationSchema.parse({
+          ...openMeteo,
+          query: trimmed,
+        })
+      }
+    } catch (error) {
+      failures.push(toProviderFailure('open-meteo-geocoding', error))
+    }
   }
 
   if (failures.length > 0) {

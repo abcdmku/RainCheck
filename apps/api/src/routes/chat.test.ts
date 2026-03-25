@@ -23,42 +23,47 @@ const requiredEnv = {
 describe('chat streaming route', () => {
   let serverUrl = ''
   let app: Awaited<ReturnType<typeof buildApp>>
+  let capturedBody: Record<string, unknown> | null = null
 
   beforeAll(async () => {
     Object.assign(process.env, requiredEnv)
     app = await buildApp({
-      chatHandler: async () => ({
-        route: {
-          taskClass: 'chat',
-          provider: 'openai',
-          model: 'gpt-4.1-mini',
-          reason: 'test route',
-          usedByok: false,
-          availableProviders: ['openai'],
-        },
-        classification: {
-          taskClass: 'chat',
-          intent: 'current-conditions',
-          timeHorizonHours: 6,
-          locationRequired: true,
-          needsArtifact: false,
-        },
-        stream: (async function* () {
-          yield {
-            type: 'TEXT_MESSAGE_CONTENT',
+      chatHandler: async (_app, body) => {
+        capturedBody = body as Record<string, unknown>
+
+        return {
+          route: {
+            taskClass: 'chat',
+            provider: 'openai',
             model: 'gpt-4.1-mini',
-            timestamp: Date.now(),
-            delta: 'Streaming test response',
-          }
-          yield {
-            type: 'RUN_FINISHED',
-            model: 'gpt-4.1-mini',
-            runId: 'run-test',
-            timestamp: Date.now(),
-            finishReason: 'stop',
-          }
-        })(),
-      }),
+            reason: 'test route',
+            usedByok: false,
+            availableProviders: ['openai'],
+          },
+          classification: {
+            taskClass: 'chat',
+            intent: 'current-conditions',
+            timeHorizonHours: 6,
+            locationRequired: true,
+            needsArtifact: false,
+          },
+          stream: (async function* () {
+            yield {
+              type: 'TEXT_MESSAGE_CONTENT',
+              model: 'gpt-4.1-mini',
+              timestamp: Date.now(),
+              delta: 'Streaming test response',
+            }
+            yield {
+              type: 'RUN_FINISHED',
+              model: 'gpt-4.1-mini',
+              runId: 'run-test',
+              timestamp: Date.now(),
+              finishReason: 'stop',
+            }
+          })(),
+        }
+      },
       weatherServiceCheck: async () => false,
     })
     serverUrl = await app.listen({ port: 0, host: '127.0.0.1' })
@@ -69,6 +74,7 @@ describe('chat streaming route', () => {
   })
 
   it('streams SSE chunks from the chat endpoint', async () => {
+    capturedBody = null
     const response = await fetch(`${serverUrl}/api/chat`, {
       method: 'POST',
       headers: {
@@ -85,5 +91,36 @@ describe('chat streaming route', () => {
     expect(text).toContain('TEXT_MESSAGE_CONTENT')
     expect(text).toContain('Streaming test response')
     expect(text).toContain('[DONE]')
+  })
+
+  it('forwards the selected location override to the chat handler', async () => {
+    capturedBody = null
+
+    const response = await fetch(`${serverUrl}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        conversationId: 'thread-test',
+        messages: [
+          { role: 'user', content: 'Best day to work outside this week?' },
+        ],
+        locationOverride: {
+          label: 'Austin, TX',
+          latitude: 30.2672,
+          longitude: -97.7431,
+        },
+      }),
+    })
+
+    expect(response.ok).toBe(true)
+    expect(capturedBody).toMatchObject({
+      locationOverride: {
+        label: 'Austin, TX',
+        latitude: 30.2672,
+        longitude: -97.7431,
+      },
+    })
   })
 })
