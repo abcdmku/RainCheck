@@ -77,6 +77,22 @@ export class RainCheckClient {
     return readJson(response)
   }
 
+  async updateConversation(
+    id: string,
+    updates: { title?: string; pinned?: boolean },
+  ): Promise<void> {
+    const response = await this.fetcher(
+      `${this.baseUrl}/api/conversations/${id}`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(updates),
+      },
+    )
+
+    assertOk(response)
+  }
+
   async deleteConversation(id: string): Promise<void> {
     const response = await this.fetcher(
       `${this.baseUrl}/api/conversations/${id}`,

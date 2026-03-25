@@ -367,17 +367,6 @@ def build_catalog() -> CatalogResponse:
                 implemented=True,
             ),
             ProductCatalogEntry(
-                productId="artifact-model-comparison-panel",
-                sourceId="raincheck-artifacts",
-                name="Model comparison panel",
-                category="artifact",
-                refreshCadence="On request",
-                validTimeSemantics="Request timestamp",
-                supportedFormats=["HTML"],
-                notes="Structured comparison table for multiple model guidance inputs.",
-                implemented=True,
-            ),
-            ProductCatalogEntry(
                 productId="artifact-hydrograph",
                 sourceId="raincheck-artifacts",
                 name="Hydrograph artifact",

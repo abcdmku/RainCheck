@@ -235,15 +235,6 @@ class LoopFrame(StrictModel):
     imageUrl: str | None = None
 
 
-class ComparisonModel(StrictModel):
-    sourceId: str
-    modelLabel: str
-    cycleTime: datetime | None = None
-    validTime: datetime | None = None
-    summary: str
-    confidence: str | None = None
-
-
 class SoundingLevel(StrictModel):
     pressureHpa: float
     temperatureC: float | None = None
@@ -259,7 +250,6 @@ class ArtifactRequest(StrictModel):
         "brief-report",
         "radar-loop",
         "satellite-loop",
-        "model-comparison-panel",
         "hydrograph",
         "skewt",
         "rainfall-chart",
@@ -271,7 +261,6 @@ class ArtifactRequest(StrictModel):
     chartPoints: list[ChartPoint] = Field(default_factory=list)
     chartSeries: list[ChartSeries] = Field(default_factory=list)
     frames: list[LoopFrame] = Field(default_factory=list)
-    comparisonModels: list[ComparisonModel] = Field(default_factory=list)
     soundingLevels: list[SoundingLevel] = Field(default_factory=list)
     thresholds: list[ChartPoint] = Field(default_factory=list)
     sections: list[str] = Field(default_factory=list)
@@ -317,7 +306,6 @@ class HealthResponse(StrictModel):
             "brief-report",
             "radar-loop",
             "satellite-loop",
-            "model-comparison-panel",
             "hydrograph",
             "skewt",
             "rainfall-chart",
@@ -335,7 +323,6 @@ class HealthResponse(StrictModel):
             "artifact-brief-report",
             "artifact-radar-loop",
             "artifact-satellite-loop",
-            "artifact-model-comparison-panel",
             "artifact-hydrograph",
             "artifact-skewt",
             "artifact-rainfall-chart",

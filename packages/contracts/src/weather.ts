@@ -64,34 +64,20 @@ export const aviationSummarySchema = z.object({
   stationId: z.string(),
   metar: z.string().nullable(),
   taf: z.string().nullable(),
-  hazards: z.object({
-    sigmets: z.array(z.string()).default([]),
-    gAirmets: z.array(z.string()).default([]),
-    cwas: z.array(z.string()).default([]),
-    pireps: z.array(z.string()).default([]),
-  }).default({
-    sigmets: [],
-    gAirmets: [],
-    cwas: [],
-    pireps: [],
-  }),
+  hazards: z
+    .object({
+      sigmets: z.array(z.string()).default([]),
+      gAirmets: z.array(z.string()).default([]),
+      cwas: z.array(z.string()).default([]),
+      pireps: z.array(z.string()).default([]),
+    })
+    .default({
+      sigmets: [],
+      gAirmets: [],
+      cwas: [],
+      pireps: [],
+    }),
   summary: z.string(),
-  citations: z.array(citationSchema),
-})
-
-export const severeSummarySchema = z.object({
-  area: z.string(),
-  summary: z.string(),
-  outlookCategory: z.string().nullable(),
-  watchContext: z.string().nullable(),
-  citations: z.array(citationSchema),
-})
-
-export const hydrologySummarySchema = z.object({
-  gaugeName: z.string(),
-  summary: z.string(),
-  floodCategory: z.string().nullable(),
-  observedAt: z.string().nullable(),
   citations: z.array(citationSchema),
 })
 
@@ -132,6 +118,79 @@ export const weatherUnitsSchema = z
   .catchall(z.string())
   .default({})
 
+export const weatherProductCardSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  sourceId: z.string(),
+  sourceName: z.string(),
+  summary: z.string(),
+  url: z.string().optional(),
+  imageUrl: z.string().optional(),
+  imageAlt: z.string().optional(),
+  artifactId: z.string().optional(),
+  href: z.string().optional(),
+  mimeType: z.string().optional(),
+  relevance: z.enum(['primary', 'supporting']).default('supporting'),
+  validAt: z.string().optional(),
+  validRange: weatherValidityRangeSchema.optional(),
+})
+
+export const normalizedForecastSignalSchema = z.object({
+  category: z
+    .enum([
+      'observation',
+      'official',
+      'analysis',
+      'guidance',
+      'hazard',
+      'hydrology',
+      'aviation',
+      'pattern',
+      'uncertainty',
+      'general',
+    ])
+    .default('general'),
+  weight: z.enum(['low', 'medium', 'high']).default('medium'),
+  label: z.string(),
+  detail: z.string(),
+  sourceIds: z.array(z.string()).default([]),
+  productIds: z.array(z.string()).default([]),
+})
+
+export const normalizedForecastObjectSchema = z.object({
+  domain: z.string(),
+  headline: z.string(),
+  mostLikelyScenario: z.string().optional(),
+  alternateScenarios: z.array(z.string()).default([]),
+  likelihood: z.enum(['low', 'medium', 'high']).optional(),
+  confidence: z.enum(['low', 'medium', 'high']).optional(),
+  keySignals: z.array(normalizedForecastSignalSchema).default([]),
+  conflicts: z.array(z.string()).default([]),
+  failureModes: z.array(z.string()).default([]),
+  whatWouldChange: z.array(z.string()).default([]),
+  productCards: z.array(weatherProductCardSchema).default([]),
+  recommendedProductIds: z.array(z.string()).default([]),
+})
+
+export const weatherConfidenceSchema = z.object({
+  level: z.enum(['low', 'medium', 'high']),
+  reason: z.string(),
+})
+
+export const weatherConclusionSchema = z.object({
+  bottomLine: z.string(),
+  confidence: weatherConfidenceSchema,
+  mostLikelyScenario: z.string(),
+  alternateScenarios: z.array(z.string()).default([]),
+  keySignals: z.array(z.string()).default([]),
+  conflicts: z.array(z.string()).default([]),
+  whatWouldChangeTheForecast: z.array(z.string()).default([]),
+  recommendedArtifacts: z.array(z.string()).default([]),
+  productCards: z.array(weatherProductCardSchema).default([]),
+  citations: z.array(citationSchema).default([]),
+  artifacts: z.array(weatherArtifactHandleSchema).default([]),
+})
+
 export const weatherToolEnvelopeSchema = z
   .object({
     sourceId: z.string(),
@@ -143,6 +202,7 @@ export const weatherToolEnvelopeSchema = z
     units: weatherUnitsSchema,
     confidence: z.number().min(0).max(1),
     summary: z.string(),
+    normalizedForecast: normalizedForecastObjectSchema,
     data: z.unknown(),
     citations: z.array(citationSchema),
     artifacts: z.array(weatherArtifactHandleSchema).optional(),
@@ -177,19 +237,3 @@ export const reportOutlineSchema = z.object({
     }),
   ),
 })
-
-export const modelComparisonEntrySchema = z.object({
-  sourceId: z.string(),
-  modelLabel: z.string(),
-  runTime: z.string(),
-  validTime: z.string(),
-  summary: z.string(),
-})
-
-export const modelComparisonSummarySchema = z.object({
-  locationName: z.string(),
-  comparedModels: z.array(modelComparisonEntrySchema),
-  consensus: z.string(),
-  uncertainty: z.string(),
-  artifacts: z.array(weatherArtifactHandleSchema).optional(),
-}).merge(weatherPreviewFieldsSchema)

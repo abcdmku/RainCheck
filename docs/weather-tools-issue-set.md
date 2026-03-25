@@ -32,7 +32,7 @@ This document turns the March 24, 2026 weather-tools PRD into a repo-grounded ba
 - Add a shared `weatherToolEnvelopeSchema` in `packages/contracts/src/weather.ts` for weather data tools with:
   `sourceId`, `sourceName`, `retrievedAt`, `validAt` or `validRange`, `location`, `units`, `confidence`, `summary`, `data`, `citations`, `artifacts`
 - Mirror the same structure in `services/weather/src/raincheck_weather/models.py`
-- Keep `resolve_location` as a special orchestration tool and do not force it into the weather-data envelope
+- Keep geocoding inside the weather tools so `locationQuery` stays the single place input surface
 - Align tool names with the PRD:
   `get_forecast_summary` -> `get_forecast`
   `get_aviation_summary` -> `get_aviation_weather`
@@ -44,7 +44,7 @@ This document turns the March 24, 2026 weather-tools PRD into a repo-grounded ba
 - Replace the current `switch` in `apps/api/src/ai/tools.ts` with an always-on core tool set plus lazy weather family registration
 - Expand `requestClassificationSchema` and `classifyRequest()` so the runtime can emit PRD domains directly:
   `severe`, `fire-weather`, `precipitation`, `winter-weather`, `medium-range`, `hydrology`, `radar`, `satellite`, `mrms`, `short-range-model`, `blend-analysis`, `global-model`, `aviation`, `tropical`, `marine`, `upper-air`, `historical-climate`, `storm-history`
-- Keep `resolve_location`, `get_current_conditions`, `get_forecast`, and `get_alerts` always on
+- Keep `get_current_conditions`, `get_forecast`, and `get_alerts` always on, with each tool resolving `locationQuery` internally
 - Expose the long tail only after classification and location/time normalization
 
 ### WX-02 Weather fetch middleware, cache, and fallback
@@ -78,23 +78,23 @@ All weather server tools execute through `POST /api/chat` today via `apps/api/sr
 
 | Tool | Priority | Current Fastify touchpoint | Current parser / schema anchor | Target cache key shape | Python artifact contract | Current status |
 | --- | --- | --- | --- | --- | --- | --- |
-| `resolve_location` | Core | `/api/chat` -> `buildServerTools()` -> `geocodeQuery()` | `normalizedLocationSchema`, `apps/api/src/weather/geocode.ts` | `wx:loc:v1:<normalized-query>` | None | Implemented |
+| Internal location resolution | Core runtime helper | weather tools -> `geocodeQuery()` | `normalizedLocationSchema`, `apps/api/src/weather/geocode.ts` | `wx:loc:v1:<normalized-query>` | None | Implemented inside weather tools, not exposed as a standalone tool |
 | `get_current_conditions` | Core | `/api/chat` -> `buildServerTools()` -> `getCurrentConditions()` | `currentConditionsSchema`, `apps/api/src/weather/nws.ts` | `wx:current:v1:<lat>,<lon>` | None | Implemented |
 | `get_forecast` | Core | `/api/chat` -> `buildServerTools()` -> `getForecast()` | `forecastSummarySchema`, `apps/api/src/weather/nws.ts` | `wx:forecast:v1:<lat>,<lon>:<horizon>` | `meteogram`, later `rainfall-chart` / `snowfall-chart` | Implemented under the current tool name `get_forecast_summary` |
 | `get_alerts` | Core | `/api/chat` -> `buildServerTools()` -> `getAlerts()` | `alertSummarySchema`, `apps/api/src/weather/nws.ts` | `wx:alerts:v1:<lat>,<lon>` | None | Implemented |
-| `get_spc_severe_products` | P0 | `/api/chat` lazy tool family `severe` | New `spcSevereProductsSchema`; start from `apps/api/src/weather/nws.ts:getSevereSummary()` and split into `apps/api/src/weather/spc.ts` | `wx:spc-severe:v1:<lat>,<lon>:<window>` | Optional `brief-report`; pair with `radar-loop` when storms are active | Partial scaffold only |
+| `get_spc_severe_products` | P0 | `/api/chat` lazy tool family `severe` | `apps/api/src/weather/spc.ts` | `wx:spc-severe:v1:<lat>,<lon>:<window>` | Optional `brief-report`; pair with `radar-loop` when storms are active | Partial scaffold only |
 | `get_fire_weather_products` | P2 | `/api/chat` lazy tool family `fire-weather` | New `fireWeatherProductsSchema`; new `apps/api/src/weather/spc.ts` or `fire-weather.ts` | `wx:spc-fire:v1:<lat>,<lon>:<window>` | Optional `brief-report` | Missing |
 | `get_wpc_qpf_ero` | P0 | `/api/chat` lazy tool family `precipitation` | New `wpcQpfEroSchema`; new `apps/api/src/weather/wpc.ts`; source catalog already has WPC scaffold | `wx:wpc-qpf-ero:v1:<lat>,<lon>:<window>` | `rainfall-chart`, later flood-focused brief artifact | Missing |
 | `get_wpc_winter_weather` | P1 | `/api/chat` lazy tool family `winter-weather` | New `wpcWinterWeatherSchema`; new `apps/api/src/weather/wpc.ts` | `wx:wpc-winter:v1:<lat>,<lon>:<window>` | `snowfall-chart` | Missing |
 | `get_wpc_medium_range_hazards` | P1 | `/api/chat` lazy tool family `medium-range` | New `wpcMediumRangeHazardsSchema`; new `apps/api/src/weather/wpc.ts` | `wx:wpc-medium:v1:<lat>,<lon>:<window>` | `brief-report` | Missing |
-| `get_hydrology_nwps` | P0 | `/api/chat` lazy tool family `hydrology` | Replace or extend `getHydrologySummaryToolDef`; new `hydrologySummaryEnvelopeSchema`; new `apps/api/src/weather/hydrology.ts` | `wx:nwps:v1:<gauge-or-latlon>:<window>` | `hydrograph` | Tool def scaffold exists, no runtime wiring |
+| `get_hydrology_nwps` | P0 | `/api/chat` lazy tool family `hydrology` | `apps/api/src/weather/hydrology.ts` | `wx:nwps:v1:<gauge-or-latlon>:<window>` | `hydrograph` | Tool def scaffold exists, no runtime wiring |
 | `get_nexrad_radar` | P0 | `/api/chat` lazy tool family `radar` | New `nexradRadarSchema`; new `apps/api/src/weather/radar.ts`; catalog stubs exist in TS and Python | `wx:nexrad:v1:<site>:<product>:<window>` | `radar-loop` | Scaffolded in catalogs only |
 | `get_goes_satellite` | P0 | `/api/chat` lazy tool family `satellite` | New `goesSatelliteSchema`; new `apps/api/src/weather/satellite.ts`; catalog stubs exist in TS and Python | `wx:goes:v1:<sector>:<product>:<window>:<lat>,<lon>` | `satellite-loop` | Scaffolded in catalogs only |
 | `get_mrms_products` | P1 | `/api/chat` lazy tool family `mrms` | New `mrmsProductsSchema`; new `apps/api/src/weather/mrms.ts`; catalog stubs exist in TS and Python | `wx:mrms:v1:<product>:<window>:<bbox>` | `rainfall-chart`, hail/wind diagnostic panels | Scaffolded in catalogs only |
 | `get_short_range_model_guidance` | P0 | `/api/chat` lazy tool family `short-range-model` | New `shortRangeGuidanceSchema`; new `apps/api/src/weather/models.ts`; source catalog already has HRRR/GFS/GEFS scaffolds | `wx:model-short:v1:<model>:<cycle>:<lat>,<lon>:<window>` | `model-comparison-panel`, `meteogram` | Missing |
 | `get_blend_and_analysis_guidance` | P0 | `/api/chat` lazy tool family `blend-analysis` | New `blendAnalysisGuidanceSchema`; new `apps/api/src/weather/models.ts`; add NBM/RTMA/URMA catalog entries | `wx:blend-analysis:v1:<product>:<cycle>:<lat>,<lon>:<window>` | `model-comparison-panel` or surface-analysis panel | Missing |
 | `get_global_model_guidance` | P0 | `/api/chat` lazy tool family `global-model` | New `globalModelGuidanceSchema`; new `apps/api/src/weather/models.ts`; extend existing GFS/GEFS/ECMWF catalog entries | `wx:model-global:v1:<model>:<cycle>:<lat>,<lon>:<window>` | `model-comparison-panel` | Partial catalog scaffold only |
-| `compare_models` | P0 | `/api/chat` lazy meta-tool after two guidance tools complete | `modelComparisonSummarySchema` already exists; add tool def in `packages/contracts/src/tools.ts`; implementation can live in `apps/api/src/weather/models.ts` | `wx:model-compare:v1:<input-hash>` | `model-comparison-panel` | Schema exists, tool missing |
+| `model-comparison-panel` artifact | P0 | Generated by live model-guidance tools when a preview panel is useful | `apps/api/src/weather/models.ts`, `apps/api/src/weather/service-client.ts` | `wx:model-compare:v1:<input-hash>` | `model-comparison-panel` | Implemented as artifact output, not a standalone comparison tool |
 | `get_aviation_weather` | P0 | `/api/chat` -> expand current aviation tool path | Extend `aviationSummarySchema`; evolve `apps/api/src/weather/aviation.ts` beyond METAR/TAF into AIRMET replacement products, SIGMET, G-AIRMET, PIREP, CWA | `wx:aviation:v1:<station>:<product-set>:<window>` | Optional `brief-report`; no custom plot needed for first pass | Partially implemented |
 | `get_tropical_weather` | P1 | `/api/chat` lazy tool family `tropical` | New `tropicalWeatherSchema`; new `apps/api/src/weather/tropical.ts`; add NHC catalog entries | `wx:tropical:v1:<basin>:<storm-or-area>:<advisory-set>` | `brief-report`, later track/cone panel | Missing |
 | `get_marine_ocean_guidance` | P1 | `/api/chat` lazy tool family `marine` | New `marineOceanGuidanceSchema`; new `apps/api/src/weather/marine.ts`; add WAVEWATCH III and RTOFS catalog entries | `wx:marine:v1:<product>:<lat>,<lon>:<window>` | marine panel or `brief-report` | Missing |
@@ -245,11 +245,11 @@ All weather server tools execute through `POST /api/chat` today via `apps/api/sr
 - Artifact contract:
   surface-analysis or model comparison panel
 
-### WX-P0-09 `get_global_model_guidance` and `compare_models`
+### WX-P0-09 `get_global_model_guidance` and model comparison artifacts
 
 - Scope:
   support GFS, GEFS, ECMWF IFS, and AIFS for days 2-10 questions
-  require at least two model families before `compare_models` can execute
+  require at least two model families before generating any comparison-focused artifact
   include WPC medium-range hazards later when hazard framing matters
 - Main files:
   new `apps/api/src/weather/models.ts`
@@ -457,7 +457,7 @@ All weather server tools execute through `POST /api/chat` today via `apps/api/sr
    `get_blend_and_analysis_guidance`
    `get_global_model_guidance`
    aviation expansion
-3. Add `compare_models` in the same PR as the second live model family so the routing rule is enforceable.
+3. Add richer comparison artifacts in the same PR as the second live model family so the routing rule is enforceable.
 4. After the fetchers land, expand the Python artifact types in the order radar -> satellite -> hydrograph -> model comparison -> Skew-T.
 
 ## Acceptance checks

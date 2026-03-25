@@ -6,6 +6,7 @@ import {
   deleteConversation,
   getConversation,
   listConversations,
+  updateConversation,
 } from '../services/conversations-service'
 
 export async function registerConversationRoutes(app: FastifyInstance) {
@@ -29,6 +30,28 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
 
     return conversation
+  })
+
+  app.patch('/api/conversations/:id', async (request, reply) => {
+    const params = request.params as { id: string }
+    const body = request.body as { title?: string; pinned?: boolean }
+
+    const updates: { title?: string; pinned?: boolean } = {}
+    if (typeof body.title === 'string') updates.title = body.title.trim()
+    if (typeof body.pinned === 'boolean') updates.pinned = body.pinned
+
+    if (!updates.title && updates.pinned === undefined) {
+      reply.status(400)
+      return { error: 'Provide title or pinned' }
+    }
+
+    const result = await updateConversation(app, params.id, updates)
+    if (!result) {
+      reply.status(404)
+      return { error: 'Conversation not found' }
+    }
+
+    return { conversation: result }
   })
 
   app.delete('/api/conversations/:id', async (request, reply) => {

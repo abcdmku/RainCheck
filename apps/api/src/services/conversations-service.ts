@@ -38,6 +38,7 @@ export async function listConversations(app: FastifyInstance) {
     conversationSchema.parse({
       id: conversation.id,
       title: conversation.title,
+      pinned: conversation.pinned,
       createdAt: conversation.createdAt,
       updatedAt: conversation.updatedAt,
       latestPreview: previewMap.get(conversation.id) ?? null,
@@ -58,6 +59,7 @@ export async function createConversation(app: FastifyInstance, input: unknown) {
   await app.raincheckDb.insert(conversationsTable).values(conversation)
   return conversationSchema.parse({
     ...conversation,
+    pinned: false,
     latestPreview: null,
   })
 }
@@ -85,6 +87,7 @@ export async function getConversation(
     conversation: conversationSchema.parse({
       id: conversation.id,
       title: conversation.title,
+      pinned: conversation.pinned,
       createdAt: conversation.createdAt,
       updatedAt: conversation.updatedAt,
       latestPreview: messages.at(-1)?.content ?? null,
@@ -110,6 +113,40 @@ export async function getConversation(
       }),
     ),
   }
+}
+
+export async function updateConversation(
+  app: FastifyInstance,
+  conversationId: string,
+  updates: { title?: string; pinned?: boolean },
+) {
+  const [conversation] = await app.raincheckDb
+    .select()
+    .from(conversationsTable)
+    .where(eq(conversationsTable.id, conversationId))
+
+  if (!conversation) {
+    return null
+  }
+
+  const now = nowIso()
+  const set: Record<string, unknown> = { updatedAt: now }
+  if (updates.title !== undefined) set.title = updates.title
+  if (updates.pinned !== undefined) set.pinned = updates.pinned
+
+  await app.raincheckDb
+    .update(conversationsTable)
+    .set(set)
+    .where(eq(conversationsTable.id, conversationId))
+
+  return conversationSchema.parse({
+    id: conversation.id,
+    title: updates.title ?? conversation.title,
+    pinned: updates.pinned ?? conversation.pinned,
+    createdAt: conversation.createdAt,
+    updatedAt: now,
+    latestPreview: null,
+  })
 }
 
 export async function deleteConversation(

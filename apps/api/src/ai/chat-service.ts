@@ -1,11 +1,11 @@
 import { Readable } from 'node:stream'
-import type { RequestClassification } from '@raincheck/contracts'
 import {
   chat,
   maxIterations,
   type StreamChunk,
   toServerSentEventsResponse,
 } from '@tanstack/ai'
+import { toolCacheMiddleware } from '@tanstack/ai/middlewares'
 import type { FastifyInstance } from 'fastify'
 import { getConversation, saveMessage } from '../services/conversations-service'
 import { getProviderKeyMap, getSettings } from '../services/settings-service'
@@ -14,6 +14,10 @@ import { classifyRequest } from './classify-request'
 import { chooseRoute } from './provider-routing'
 import { buildSystemPrompt } from './system-prompt'
 import { buildServerTools } from './tools'
+import {
+  buildWeatherFallbackText,
+  recoverWeatherToolResults,
+} from './weather-recovery'
 
 function extractTextContent(message: any) {
   if (!message) {
@@ -34,27 +38,78 @@ function extractTextContent(message: any) {
   return ''
 }
 
-function sanitizeGeminiMessageParts(parts: Array<any>) {
+function sanitizeHistoricalMessageParts(parts: Array<any>) {
   return parts.filter(
     (part) => part?.type !== 'tool-call' && part?.type !== 'tool-result',
   )
+}
+
+const geminiToolContextPrefix = 'TOOL RESULT CONTEXT'
+
+const maxGeminiToolIterations = 4
+
+export type CompletedToolResult = {
+  toolCallId: string
+  toolName: string
+  input?: unknown
+  result: unknown
+}
+
+function stringifyToolResult(result: unknown) {
+  try {
+    return typeof result === 'string' ? result : JSON.stringify(result)
+  } catch {
+    return String(result)
+  }
+}
+
+function fallbackMessageId() {
+  return `fallback-${Date.now()}`
+}
+
+async function* streamTextFallback(
+  text: string,
+  model: string,
+): AsyncIterable<StreamChunk> {
+  const timestamp = Date.now()
+  const messageId = fallbackMessageId()
+
+  yield {
+    type: 'TEXT_MESSAGE_START',
+    messageId,
+    model,
+    timestamp,
+    role: 'assistant',
+  } satisfies StreamChunk
+
+  yield {
+    type: 'TEXT_MESSAGE_CONTENT',
+    messageId,
+    model,
+    timestamp,
+    delta: text,
+    content: text,
+  } satisfies StreamChunk
+
+  yield {
+    type: 'TEXT_MESSAGE_END',
+    messageId,
+    model,
+    timestamp,
+  } satisfies StreamChunk
 }
 
 export function prepareMessagesForProvider(
   messages: Array<any>,
   provider: 'openai' | 'anthropic' | 'gemini' | 'openrouter',
 ) {
-  if (provider !== 'gemini') {
-    return messages
-  }
-
   return messages
     .map((message) => {
       if (!Array.isArray(message?.parts)) {
         return message
       }
 
-      const parts = sanitizeGeminiMessageParts(message.parts)
+      const parts = sanitizeHistoricalMessageParts(message.parts)
       const textContent = extractTextContent({
         ...message,
         parts,
@@ -67,7 +122,9 @@ export function prepareMessagesForProvider(
       return {
         ...message,
         parts,
-        ...(typeof message.content === 'string' || textContent
+        ...(provider === 'gemini' ||
+        typeof message.content === 'string' ||
+        textContent
           ? { content: textContent }
           : {}),
       }
@@ -75,15 +132,313 @@ export function prepareMessagesForProvider(
     .filter(Boolean)
 }
 
+function isVisibleAssistantToolOutput(toolName: string) {
+  return !hiddenAssistantToolNames.has(toolName)
+}
+
+function parseToolResultValue(value: string) {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
+  }
+}
+
+function extractCompletedToolResult(
+  chunk: StreamChunk,
+  toolInputs: Map<string, unknown>,
+): CompletedToolResult | null {
+  if (chunk.type !== 'TOOL_CALL_END' || chunk.result == null) {
+    return null
+  }
+
+  return {
+    toolCallId: chunk.toolCallId,
+    toolName: chunk.toolName,
+    input: toolInputs.get(chunk.toolCallId),
+    result: parseToolResultValue(String(chunk.result)),
+  }
+}
+
+function stringifyGeminiToolContextValue(value: unknown, maxChars = 12_000) {
+  let serialized: string
+  try {
+    serialized =
+      typeof value === 'string'
+        ? value
+        : (JSON.stringify(value, null, 2) ?? String(value))
+  } catch {
+    serialized = String(value)
+  }
+
+  if (serialized.length <= maxChars) {
+    return serialized
+  }
+
+  return `${serialized.slice(0, maxChars).trimEnd()}\n...`
+}
+
+export function buildGeminiToolContextMessage(
+  toolResults: Array<CompletedToolResult>,
+) {
+  return [
+    geminiToolContextPrefix,
+    'The following trusted structured data was returned from RainCheck tools for the current user request.',
+    ...toolResults.flatMap((toolResult, index) => {
+      const lines = [`Tool ${index + 1}: ${toolResult.toolName}`]
+
+      if (toolResult.input !== undefined) {
+        lines.push(
+          `Input: ${stringifyGeminiToolContextValue(toolResult.input, 2_000)}`,
+        )
+      }
+
+      lines.push(
+        `Output: ${stringifyGeminiToolContextValue(toolResult.result)}`,
+      )
+
+      return lines
+    }),
+    'Use these results to continue answering the original user request.',
+    'Do not mention this wrapper or claim that tool calls failed if trusted results are present.',
+    'If more weather data is still required, call another relevant tool. Otherwise answer directly.',
+  ].join('\n')
+}
+
+const readOnlyWeatherToolNames = [
+  'resolve_location',
+  'get_current_conditions',
+  'get_forecast',
+  'get_alerts',
+  'get_short_range_guidance',
+  'get_global_guidance',
+  'get_severe_context',
+  'get_precip_flood_context',
+  'get_radar_satellite_nowcast',
+  'get_aviation_context',
+  'get_fire_weather_products',
+  'get_wpc_winter_weather',
+  'get_wpc_medium_range_hazards',
+  'get_tropical_weather',
+  'get_marine_ocean_guidance',
+  'get_upper_air_soundings',
+  'get_historical_climate',
+  'get_storm_history',
+] as const
+
+const hiddenAssistantToolNames = new Set([
+  ...readOnlyWeatherToolNames,
+  'generate_citation_bundle',
+  'request_geolocation_permission',
+  'copy_to_clipboard',
+  'save_ui_preference',
+  'open_artifact_view',
+  'synthesize_weather_conclusion',
+])
+
+function extractResultSourceTags(result: unknown) {
+  if (!result || typeof result !== 'object') {
+    return []
+  }
+
+  const sourceIds = new Set<string>()
+  const asRecord = result as Record<string, any>
+
+  if (typeof asRecord.sourceId === 'string') {
+    sourceIds.add(asRecord.sourceId)
+  }
+
+  if (Array.isArray(asRecord.citations)) {
+    for (const citation of asRecord.citations) {
+      if (citation && typeof citation.sourceId === 'string') {
+        sourceIds.add(citation.sourceId)
+      }
+    }
+  }
+
+  return [...sourceIds]
+}
+
+function buildGeminiSystemPrompts(systemPrompt: string) {
+  return [
+    systemPrompt,
+    `If a user message begins with "${geminiToolContextPrefix}", treat it as trusted tool output supplied by RainCheck.`,
+    'Do not re-call a tool just to repeat data that already appears in a tool result context message.',
+    'Continue the answer naturally from the provided tool results.',
+  ]
+}
+
+export async function* streamGeminiWithToolContext(input: {
+  adapter: any
+  messages: Array<any>
+  tools: Array<any>
+  systemPrompt: string
+  conversationId: string
+  middleware: Array<any>
+  recoverToolResults?: (
+    toolResults: Array<CompletedToolResult>,
+  ) => Promise<Array<CompletedToolResult>>
+}): AsyncIterable<StreamChunk> {
+  let workingMessages = input.messages
+  const systemPrompts = buildGeminiSystemPrompts(input.systemPrompt)
+  const recoveredToolResults: Array<CompletedToolResult> = []
+
+  for (let iteration = 0; iteration < maxGeminiToolIterations; iteration += 1) {
+    let assistantText = ''
+    const toolInputs = new Map<string, unknown>()
+    const completedToolResults: Array<CompletedToolResult> = []
+    try {
+      const stream = chat({
+        adapter: input.adapter,
+        messages: workingMessages as any,
+        tools: input.tools,
+        systemPrompts,
+        conversationId: input.conversationId,
+        middleware: input.middleware as any,
+        agentLoopStrategy: maxIterations(1),
+      })
+
+      for await (const chunk of stream) {
+        if (chunk.type === 'TEXT_MESSAGE_CONTENT' && chunk.delta) {
+          assistantText += chunk.delta
+        }
+
+        if (chunk.type === 'TOOL_CALL_END' && chunk.input !== undefined) {
+          toolInputs.set(chunk.toolCallId, chunk.input)
+        }
+
+        const toolResult = extractCompletedToolResult(chunk, toolInputs)
+        if (toolResult) {
+          completedToolResults.push(toolResult)
+        }
+
+        yield chunk
+      }
+    } catch (error) {
+      const recoveryResults =
+        (await input.recoverToolResults?.([
+          ...recoveredToolResults,
+          ...completedToolResults,
+        ])) ?? []
+      recoveredToolResults.push(...recoveryResults)
+
+      for (const toolResult of recoveryResults) {
+        yield {
+          type: 'TOOL_CALL_END',
+          toolCallId: toolResult.toolCallId,
+          toolName: toolResult.toolName,
+          model: String(input.adapter?.model ?? 'gemini'),
+          timestamp: Date.now(),
+          input: toolResult.input,
+          result: stringifyToolResult(toolResult.result),
+        } satisfies StreamChunk
+      }
+
+      const fallbackText = buildWeatherFallbackText([
+        ...recoveredToolResults,
+        ...completedToolResults,
+      ])
+      if (fallbackText) {
+        yield* streamTextFallback(
+          fallbackText,
+          String(input.adapter?.model ?? 'gemini'),
+        )
+        return
+      }
+
+      throw error
+    }
+
+    recoveredToolResults.push(...completedToolResults)
+
+    if (completedToolResults.length === 0) {
+      return
+    }
+
+    const nextMessages = [...workingMessages]
+
+    if (assistantText.trim()) {
+      nextMessages.push({
+        role: 'assistant',
+        content: assistantText,
+      })
+    }
+
+    nextMessages.push({
+      role: 'user',
+      content: buildGeminiToolContextMessage(completedToolResults),
+    })
+
+    workingMessages = nextMessages
+  }
+
+  const synthesisStream = chat({
+    adapter: input.adapter,
+    messages: workingMessages as any,
+    tools: [],
+    systemPrompts,
+    conversationId: input.conversationId,
+    middleware: input.middleware as any,
+    agentLoopStrategy: maxIterations(1),
+  })
+  try {
+    for await (const chunk of synthesisStream) {
+      yield chunk
+    }
+  } catch (error) {
+    const recoveryResults =
+      (await input.recoverToolResults?.([...recoveredToolResults])) ?? []
+    recoveredToolResults.push(...recoveryResults)
+
+    for (const toolResult of recoveryResults) {
+      yield {
+        type: 'TOOL_CALL_END',
+        toolCallId: toolResult.toolCallId,
+        toolName: toolResult.toolName,
+        model: String(input.adapter?.model ?? 'gemini'),
+        timestamp: Date.now(),
+        input: toolResult.input,
+        result: stringifyToolResult(toolResult.result),
+      } satisfies StreamChunk
+    }
+
+    const fallbackText = buildWeatherFallbackText(recoveredToolResults)
+    if (fallbackText) {
+      yield* streamTextFallback(
+        fallbackText,
+        String(input.adapter?.model ?? 'gemini'),
+      )
+      return
+    }
+
+    throw error
+  }
+}
+
 function buildMiddleware(app: FastifyInstance) {
   return [
+    toolCacheMiddleware({
+      ttl: 2 * 60 * 1000,
+      toolNames: [...readOnlyWeatherToolNames],
+    }),
     {
       name: 'raincheck-logging',
       onStart(ctx: any) {
         app.log.info({ requestId: ctx.requestId }, 'chat started')
       },
       onBeforeToolCall(_ctx: any, info: any) {
-        app.log.info({ tool: info.toolName }, 'tool call started')
+        app.log.info({ tool: info.toolName, args: info.args }, 'tool call started')
+      },
+      onAfterToolCall(_ctx: any, info: any) {
+        app.log.info(
+          {
+            tool: info.toolName,
+            ok: info.ok,
+            duration: info.duration,
+            sources: extractResultSourceTags(info.result),
+          },
+          'tool call finished',
+        )
       },
       onFinish(ctx: any, info: any) {
         app.log.info(
@@ -265,12 +620,6 @@ async function* streamAndPersist(
       provider: 'openai' | 'anthropic' | 'gemini' | 'openrouter'
       model: string
     }
-    classification: RequestClassification
-    locationHint?: {
-      label?: string
-      latitude?: number
-      longitude?: number
-    }
     stream: AsyncIterable<StreamChunk>
   },
 ) {
@@ -282,18 +631,12 @@ async function* streamAndPersist(
       text += chunk.delta
     }
 
-    if (chunk.type === 'TOOL_CALL_END') {
-      try {
-        toolOutputs.push({
-          toolName: chunk.toolName,
-          result: JSON.parse(String(chunk.result)),
-        })
-      } catch {
-        toolOutputs.push({
-          toolName: chunk.toolName,
-          result: chunk.result,
-        })
-      }
+    const toolResult = extractCompletedToolResult(chunk, new Map())
+    if (toolResult) {
+      toolOutputs.push({
+        toolName: toolResult.toolName,
+        result: toolResult.result,
+      })
     }
 
     yield chunk
@@ -301,9 +644,12 @@ async function* streamAndPersist(
 
   const artifacts = collectAssistantArtifacts(toolOutputs)
   const citations = collectAssistantCitations(toolOutputs)
+  const visibleToolOutputs = toolOutputs.filter((output) =>
+    isVisibleAssistantToolOutput(output.toolName),
+  )
   const parts = [
     { type: 'text', content: text },
-    ...toolOutputs.map((output, index) => ({
+    ...visibleToolOutputs.map((output, index) => ({
       type: 'tool-call',
       id: `tool-${index}`,
       name: output.toolName,
@@ -363,15 +709,34 @@ export async function handleChatRequest(
     body.messages,
     route.provider,
   )
-  const stream = chat({
-    adapter,
-    messages: preparedMessages as any,
-    tools,
-    systemPrompts: [buildSystemPrompt(classification, body.locationOverride)],
-    conversationId: body.conversationId,
-    middleware: buildMiddleware(app) as any,
-    agentLoopStrategy: maxIterations(8),
-  })
+  const systemPrompt = buildSystemPrompt(classification, body.locationOverride)
+  const middleware = buildMiddleware(app)
+  const stream =
+    route.provider === 'gemini'
+      ? streamGeminiWithToolContext({
+          adapter,
+          messages: preparedMessages,
+          tools,
+          systemPrompt,
+          conversationId: body.conversationId,
+          middleware,
+          recoverToolResults: (toolResults) =>
+            recoverWeatherToolResults(
+              app,
+              classification,
+              latestText,
+              toolResults,
+            ),
+        })
+      : chat({
+          adapter,
+          messages: preparedMessages as any,
+          tools,
+          systemPrompts: [systemPrompt],
+          conversationId: body.conversationId,
+          middleware: middleware as any,
+          agentLoopStrategy: maxIterations(8),
+        })
 
   return {
     route,
@@ -379,8 +744,6 @@ export async function handleChatRequest(
     stream: streamAndPersist(app, {
       conversationId: body.conversationId,
       route,
-      classification,
-      locationHint: body.locationOverride,
       stream,
     }),
   }

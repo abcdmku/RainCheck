@@ -58,30 +58,6 @@ client = TestClient(app)
             "RainCheck Satellite Loop",
         ),
         (
-            "/artifacts/model-comparison-panel",
-            {
-                "artifactType": "model-comparison-panel",
-                "locationQuery": "Tulsa, OK",
-                "prompt": "Compare guidance for the evening storm window",
-                "comparisonModels": [
-                    {
-                        "sourceId": "ncep-models",
-                        "modelLabel": "HRRR",
-                        "summary": "Most aggressive convective timing.",
-                        "confidence": "medium",
-                    },
-                    {
-                        "sourceId": "ecmwf-open-data",
-                        "modelLabel": "ECMWF",
-                        "summary": "Slower and a bit farther south.",
-                        "confidence": "high",
-                    },
-                ],
-            },
-            "image/svg+xml",
-            "HRRR",
-        ),
-        (
             "/artifacts/hydrograph",
             {
                 "artifactType": "hydrograph",

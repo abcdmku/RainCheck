@@ -1,0 +1,7 @@
+interface:
+  display_name: "Weather Synthesis Workflow"
+  short_description: "Guide RainCheck toward synthesis-first weather answers."
+  default_prompt: "Use $weather-synthesis-workflow to plan or review RainCheck weather orchestration and expert-answer framing."
+
+policy:
+  allow_implicit_invocation: true

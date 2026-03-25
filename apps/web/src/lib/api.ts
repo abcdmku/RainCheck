@@ -46,6 +46,7 @@ export type ConversationPayload = {
   conversation: {
     id: string
     title: string
+    pinned: boolean
     createdAt: string
     updatedAt: string
     latestPreview: string | null

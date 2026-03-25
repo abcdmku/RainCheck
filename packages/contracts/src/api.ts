@@ -1,25 +1,12 @@
 import { z } from 'zod'
 
-import {
-  conversationSchema,
-  messageRecordSchema,
-  routeDecisionSchema,
-} from './chat'
+import { conversationSchema, messageRecordSchema } from './chat'
 import {
   appSettingsSchema,
   type clearProviderKeySchema,
   type storeProviderKeySchema,
   updateAppSettingsSchema,
 } from './settings'
-import {
-  alertSummarySchema,
-  aviationSummarySchema,
-  currentConditionsSchema,
-  forecastSummarySchema,
-  hydrologySummarySchema,
-  modelComparisonSummarySchema,
-  severeSummarySchema,
-} from './weather'
 
 export const createConversationResponseSchema = z.object({
   conversation: conversationSchema,
@@ -49,17 +36,6 @@ export const healthResponseSchema = z.object({
     database: z.enum(['up', 'degraded']),
     weatherService: z.enum(['up', 'degraded', 'down']),
   }),
-})
-
-export const weatherDigestResponseSchema = z.object({
-  current: currentConditionsSchema.nullable(),
-  forecast: forecastSummarySchema.nullable(),
-  alerts: z.array(alertSummarySchema),
-  aviation: aviationSummarySchema.nullable().optional(),
-  severe: severeSummarySchema.nullable().optional(),
-  hydrology: hydrologySummarySchema.nullable().optional(),
-  modelComparison: modelComparisonSummarySchema.nullable().optional(),
-  routing: routeDecisionSchema.optional(),
 })
 
 export type StoreProviderKeyInput = z.infer<typeof storeProviderKeySchema>

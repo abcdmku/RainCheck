@@ -19,10 +19,6 @@ const geolocationTool = requestGeolocationPermissionToolDef.client(async () => {
     label: 'Current device location',
     latitude: position.coords.latitude,
     longitude: position.coords.longitude,
-    coordinates: {
-      latitude: position.coords.latitude,
-      longitude: position.coords.longitude,
-    },
   }
 })
 

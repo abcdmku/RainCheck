@@ -47,15 +47,16 @@ describe('chooseSourceManifests', () => {
     )
   })
 
-  it('includes model families for model-comparison workflows', () => {
+  it('includes global guidance families for medium-range workflows', () => {
     const sources = chooseSourceManifests({
       taskClass: 'research',
-      intent: 'model-comparison',
+      intent: 'global-model',
       timeHorizonHours: 48,
       locationRequired: true,
-      needsArtifact: true,
+      needsArtifact: false,
     })
 
+    expect(sources[0]?.sourceId).toBe('wpc-medium')
     expect(sources.some((source) => source.sourceId === 'gfs')).toBe(true)
     expect(sources.some((source) => source.sourceId === 'gefs')).toBe(true)
     expect(

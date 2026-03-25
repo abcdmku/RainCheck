@@ -128,14 +128,6 @@ async def artifact_satellite_loop(
     return generate_weather_artifact(settings, payload)
 
 
-@app.post("/artifacts/model-comparison-panel", response_model=ArtifactResponse)
-async def artifact_model_comparison_panel(
-    payload: ArtifactRequest,
-    settings: Settings = Depends(get_settings),
-) -> ArtifactResponse:
-    return generate_weather_artifact(settings, payload)
-
-
 @app.post("/artifacts/hydrograph", response_model=ArtifactResponse)
 async def artifact_hydrograph(
     payload: ArtifactRequest,

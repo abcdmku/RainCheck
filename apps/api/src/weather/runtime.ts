@@ -33,6 +33,60 @@ export type WeatherArtifactHandle = {
   mimeType: string
 }
 
+export type WeatherProductCard = {
+  id: string
+  title: string
+  sourceId: string
+  sourceName: string
+  summary: string
+  url?: string
+  imageUrl?: string
+  imageAlt?: string
+  artifactId?: string
+  href?: string
+  mimeType?: string
+  relevance?: 'primary' | 'supporting'
+  validAt?: string
+  validRange?: {
+    start: string
+    end: string
+  }
+}
+
+export type WeatherSignal = {
+  category?:
+    | 'observation'
+    | 'official'
+    | 'analysis'
+    | 'guidance'
+    | 'hazard'
+    | 'hydrology'
+    | 'aviation'
+    | 'pattern'
+    | 'uncertainty'
+    | 'general'
+  weight?: 'low' | 'medium' | 'high'
+  label: string
+  detail: string
+  sourceIds?: Array<string>
+  productIds?: Array<string>
+}
+
+export type NormalizedForecast = {
+  domain: string
+  headline: string
+  mostLikelyScenario?: string
+  alternateScenarios?: Array<string>
+  likelihood?: 'low' | 'medium' | 'high'
+  confidence?: 'low' | 'medium' | 'high'
+  keySignals?: Array<WeatherSignal>
+  conflicts?: Array<string>
+  failureModes?: Array<string>
+  whatWouldChange?: Array<string>
+  productCards?: Array<WeatherProductCard>
+  recommendedProductIds?: Array<string>
+}
+
 export type WeatherLocationSummary = {
   query: string
   name: string
@@ -56,6 +110,7 @@ export type WeatherEnvelope<TData> = {
   units: Record<string, string>
   confidence: number
   summary: string
+  normalizedForecast: NormalizedForecast
   data: TData
   citations: Array<Citation>
   artifacts?: Array<WeatherArtifactHandle>
@@ -152,6 +207,53 @@ function sourceCitation(source: WeatherSourceTag, retrievedAt: string, note?: st
   } satisfies Citation
 }
 
+function levelFromConfidence(value: number): 'low' | 'medium' | 'high' {
+  if (value >= 0.8) {
+    return 'high'
+  }
+
+  if (value >= 0.55) {
+    return 'medium'
+  }
+
+  return 'low'
+}
+
+function buildDefaultNormalizedForecast(input: {
+  source: WeatherSourceTag
+  summary: string
+  confidence: number
+  validAt?: string
+  validRange?: {
+    start: string
+    end: string
+  }
+}): NormalizedForecast {
+  return {
+    domain: input.source.productId,
+    headline: input.summary,
+    mostLikelyScenario: input.summary,
+    alternateScenarios: [],
+    likelihood: levelFromConfidence(input.confidence),
+    confidence: levelFromConfidence(input.confidence),
+    keySignals: [
+      {
+        category: 'general',
+        weight: levelFromConfidence(input.confidence),
+        label: input.source.label,
+        detail: input.summary,
+        sourceIds: [input.source.sourceId],
+        productIds: [input.source.productId],
+      },
+    ],
+    conflicts: [],
+    failureModes: [],
+    whatWouldChange: [],
+    productCards: [],
+    recommendedProductIds: [],
+  }
+}
+
 export function buildWeatherEnvelope<TData>(input: {
   source: WeatherSourceTag
   location: WeatherLocationSummary
@@ -159,6 +261,7 @@ export function buildWeatherEnvelope<TData>(input: {
   summary: string
   data: TData
   confidence?: number
+  normalizedForecast?: NormalizedForecast
   validAt?: string
   validRange?: {
     start: string
@@ -178,6 +281,7 @@ export function buildWeatherEnvelope<TData>(input: {
     typeof input.units === 'string'
       ? { defaultUnit: input.units }
       : input.units
+  const confidence = input.confidence ?? 0.75
 
   return {
     sourceId: input.source.sourceId,
@@ -187,8 +291,17 @@ export function buildWeatherEnvelope<TData>(input: {
     validRange: input.validRange,
     location: input.location,
     units,
-    confidence: input.confidence ?? 0.75,
+    confidence,
     summary: input.summary,
+    normalizedForecast:
+      input.normalizedForecast ??
+      buildDefaultNormalizedForecast({
+        source: input.source,
+        summary: input.summary,
+        confidence,
+        validAt: input.validAt,
+        validRange: input.validRange,
+      }),
     data: input.data,
     citations: input.citations ?? [sourceCitation(input.source, retrievedAt)],
     artifacts: input.artifacts,

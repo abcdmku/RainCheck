@@ -23,7 +23,6 @@ const toolCategories: Array<ToolCategory> = [
   {
     label: 'Core',
     tools: [
-      { name: 'resolve_location', description: 'Location resolution' },
       { name: 'get_current_conditions', description: 'Current conditions' },
       { name: 'get_forecast', description: 'Forecast' },
       { name: 'get_alerts', description: 'Active alerts' },
@@ -32,46 +31,47 @@ const toolCategories: Array<ToolCategory> = [
   {
     label: 'Severe & Fire',
     tools: [
-      { name: 'get_spc_severe_products', description: 'SPC severe' },
+      { name: 'get_severe_context', description: 'SPC severe context' },
       { name: 'get_fire_weather_products', description: 'Fire weather' },
     ],
   },
   {
     label: 'Precipitation',
     tools: [
-      { name: 'get_wpc_qpf_ero', description: 'QPF & ERO' },
+      { name: 'get_precip_flood_context', description: 'QPF, ERO & NWPS' },
       { name: 'get_wpc_winter_weather', description: 'Winter weather' },
-      {
-        name: 'get_wpc_medium_range_hazards',
-        description: 'Medium-range hazards',
-      },
     ],
   },
   {
     label: 'Remote Sensing',
     tools: [
-      { name: 'get_nexrad_radar', description: 'NEXRAD radar' },
-      { name: 'get_goes_satellite', description: 'GOES satellite' },
-      { name: 'get_mrms_products', description: 'MRMS products' },
+      {
+        name: 'get_radar_satellite_nowcast',
+        description: 'Radar, satellite & nowcast',
+      },
     ],
   },
   {
     label: 'Model Guidance',
     tools: [
-      { name: 'get_short_range_model_guidance', description: 'Short-range' },
       {
-        name: 'get_blend_and_analysis_guidance',
-        description: 'Blend & analysis',
+        name: 'get_short_range_guidance',
+        description: 'HRRR / RAP / NAM / HREF / NBM / RTMA / URMA',
       },
-      { name: 'get_global_model_guidance', description: 'Global models' },
-      { name: 'compare_models', description: 'Compare models' },
+      {
+        name: 'get_global_guidance',
+        description: 'GFS / GEFS / ECMWF',
+      },
     ],
   },
   {
     label: 'Specialized',
     tools: [
-      { name: 'get_aviation_weather', description: 'Aviation' },
-      { name: 'get_hydrology_nwps', description: 'Hydrology' },
+      { name: 'get_aviation_context', description: 'Aviation context' },
+      {
+        name: 'get_wpc_medium_range_hazards',
+        description: 'Medium-range hazards',
+      },
       { name: 'get_tropical_weather', description: 'Tropical' },
       { name: 'get_marine_ocean_guidance', description: 'Marine & ocean' },
       { name: 'get_upper_air_soundings', description: 'Upper-air soundings' },
@@ -106,7 +106,6 @@ type ComposerProps = {
   onReasoningLevelChange: (level: ReasoningLevel) => void
   locationLabel: string | null
   onLocationChange: (location: ChatLocationOverride | null) => void
-  canAutoDetectLocation: boolean
   messageHistory: Array<string>
 }
 
@@ -224,7 +223,6 @@ export function Composer({
   onReasoningLevelChange,
   locationLabel,
   onLocationChange,
-  canAutoDetectLocation,
   messageHistory,
 }: ComposerProps) {
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false)
@@ -295,14 +293,6 @@ export function Composer({
       { timeout: 10000 },
     )
   }, [onLocationChange])
-
-  /* ── Auto-detect on mount if no location set ─ */
-
-  useEffect(() => {
-    if (canAutoDetectLocation && !locationLabel) {
-      detectLocation()
-    }
-  }, [canAutoDetectLocation, detectLocation, locationLabel])
 
   /* ── Keyboard handler ──────────────────────── */
 

@@ -22,6 +22,8 @@ packages/*/node_modules
 services/weather/.pytest_cache
 services/weather/.venv
 services/weather/__pycache__
+services/weather/src/**/__pycache__
+services/weather/tests/__pycache__
 services/weather/.mypy_cache
 services/weather/.ruff_cache
 services/weather/.coverage

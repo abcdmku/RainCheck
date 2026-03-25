@@ -21,7 +21,6 @@ This service is intentionally narrow:
 - `POST /artifacts/brief-report`
 - `POST /artifacts/radar-loop`
 - `POST /artifacts/satellite-loop`
-- `POST /artifacts/model-comparison-panel`
 - `POST /artifacts/hydrograph`
 - `POST /artifacts/skewt`
 - `POST /artifacts/rainfall-chart`

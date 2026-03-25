@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 
 import { geocodeQuery } from './geocode'
-import { previewFromArtifact } from './previews'
 import {
   buildWeatherEnvelope,
   cacheKey,
@@ -9,8 +8,9 @@ import {
   stripHtml,
   summarizeText,
   type WeatherEnvelope,
+  type WeatherProductCard,
+  type WeatherSignal,
 } from './runtime'
-import { generateArtifact } from './service-client'
 
 type ModelProduct = {
   productId: string
@@ -18,23 +18,50 @@ type ModelProduct = {
   title: string
   summary: string
   url: string
+  sourceId: string
+  sourceName: string
 }
 
 type ModelGuidanceData = {
   products: Array<ModelProduct>
   notes: Array<string>
+  missingSources: Array<string>
 }
 
-function nomadsUrl() {
-  return 'https://nomads.ncep.noaa.gov/'
+function hrrrUrl() {
+  return 'https://nomads.ncep.noaa.gov/gribfilter.php?ds=hrrr_2d'
+}
+
+function rapUrl() {
+  return 'https://nomads.ncep.noaa.gov/gribfilter.php?ds=rap32'
+}
+
+function namUrl() {
+  return 'https://nomads.ncep.noaa.gov/gribfilter.php?ds=nam'
+}
+
+function hrefUrl() {
+  return 'https://nomads.ncep.noaa.gov/gribfilter.php?ds=hrefconus'
 }
 
 function blendUrl() {
-  return 'https://www.nco.ncep.noaa.gov/pmb/products/blend/'
+  return 'https://nomads.ncep.noaa.gov/gribfilter.php?ds=blend'
 }
 
 function rtmaUrl() {
-  return 'https://www.nco.ncep.noaa.gov/pmb/products/rtma/'
+  return 'https://nomads.ncep.noaa.gov/gribfilter.php?ds=rtma2p5'
+}
+
+function urmaUrl() {
+  return 'https://www.nco.ncep.noaa.gov/pmb/products/urma/'
+}
+
+function gfsUrl() {
+  return 'https://nomads.ncep.noaa.gov/gribfilter.php?ds=gfs_0p25'
+}
+
+function gefsUrl() {
+  return 'https://nomads.ncep.noaa.gov/gribfilter.php?ds=gefs_atmos_0p25s'
 }
 
 function ecmwfOpenDataUrl() {
@@ -59,277 +86,485 @@ async function loadModelPage(
   })
 }
 
-async function buildModelPreview(
-  app: FastifyInstance,
-  locationName: string,
-  prompt: string,
-  models: Array<{
-    sourceId: string
-    modelLabel: string
-    summary: string
-    cycleTime?: string
-    validTime?: string
-    confidence?: string
-  }>,
+function settledFailures(
+  results: Array<PromiseSettledResult<Awaited<ReturnType<typeof loadModelPage>>>>,
 ) {
-  const previewArtifact = await generateArtifact(app, {
-    artifactType: 'model-comparison-panel',
-    locationQuery: locationName,
-    prompt,
-    comparisonModels: models,
+  return results.flatMap((result) => {
+    if (result.status === 'fulfilled') {
+      return []
+    }
+
+    const message =
+      result.reason instanceof Error ? result.reason.message : String(result.reason)
+    return [message]
   })
-  const artifactHandle = {
-    artifactId: previewArtifact.artifactId,
-    type: String(previewArtifact.type),
-    title: previewArtifact.title,
-    href: previewArtifact.href,
-    mimeType: previewArtifact.mimeType,
+}
+
+function confidenceLevel(value: number): 'low' | 'medium' | 'high' {
+  if (value >= 0.8) {
+    return 'high'
   }
 
+  if (value >= 0.6) {
+    return 'medium'
+  }
+
+  return 'low'
+}
+
+function inferMimeType(url: string | undefined) {
+  if (!url) {
+    return undefined
+  }
+
+  const normalized = url.split('?')[0]?.toLowerCase() ?? url.toLowerCase()
+  if (normalized.endsWith('.gif')) {
+    return 'image/gif'
+  }
+  if (normalized.endsWith('.png')) {
+    return 'image/png'
+  }
+  if (normalized.endsWith('.svg')) {
+    return 'image/svg+xml'
+  }
+  if (normalized.endsWith('.webp')) {
+    return 'image/webp'
+  }
+
+  return 'image/jpeg'
+}
+
+function productCard(
+  product: ModelProduct,
+  relevance: 'primary' | 'supporting' = 'supporting',
+): WeatherProductCard {
   return {
-    artifacts: [artifactHandle],
-    ...previewFromArtifact(
-      artifactHandle,
-      `Model guidance comparison panel for ${locationName}`,
-    ),
+    id: product.productId,
+    title: product.title,
+    sourceId: product.sourceId,
+    sourceName: product.sourceName,
+    summary: product.summary,
+    url: product.url,
+    href: product.url,
+    mimeType: inferMimeType(product.url),
+    relevance,
   }
 }
 
-export async function getShortRangeModelGuidance(
-  app: FastifyInstance,
-  locationQuery: string,
-): Promise<WeatherEnvelope<ModelGuidanceData>> {
-  const location = await geocodeQuery(app, locationQuery)
-  const [hrrr, rap, nam, href] = await Promise.all([
-    loadModelPage(app, 'hrrr', 'hrrr', 'HRRR', nomadsUrl(), 'model:hrrr'),
-    loadModelPage(app, 'rap', 'rap', 'RAP', nomadsUrl(), 'model:rap'),
-    loadModelPage(app, 'nam', 'nam', 'NAM', nomadsUrl(), 'model:nam'),
-    loadModelPage(app, 'href', 'href', 'HREF', nomadsUrl(), 'model:href'),
-  ])
-  const text = stripHtml(
-    `${hrrr.value} ${rap.value} ${nam.value} ${href.value}`,
-  )
-  const products = [
+function buildSignal(
+  product: ModelProduct,
+  detail: string,
+  weight: 'low' | 'medium' | 'high',
+): WeatherSignal {
+  return {
+    category:
+      product.sourceId === 'rtma' || product.sourceId === 'urma'
+        ? 'analysis'
+        : product.sourceId === 'nbm'
+          ? 'analysis'
+          : 'guidance',
+    weight,
+    label: product.title,
+    detail,
+    sourceIds: [product.sourceId],
+    productIds: [product.productId],
+  }
+}
+
+function buildShortRangeProducts() {
+  return [
     {
       productId: 'hrrr',
       modelId: 'hrrr',
       title: 'HRRR',
       summary:
-        'Hourly HRRR guidance is distributed through NOMADS and the NCO product inventory.',
-      url: nomadsUrl(),
+        'Use HRRR for storm-scale timing and convective evolution inside the next 18 hours.',
+      url: hrrrUrl(),
+      sourceId: 'hrrr',
+      sourceName: 'HRRR',
     },
     {
       productId: 'rap',
       modelId: 'rap',
       title: 'RAP',
       summary:
-        'RAP guidance is exposed through NOMADS as rapid-refresh short-range guidance.',
-      url: nomadsUrl(),
+        'Use RAP to sanity-check the evolving mesoscale environment and rapid-refresh short-range trends.',
+      url: rapUrl(),
+      sourceId: 'rap',
+      sourceName: 'RAP',
     },
     {
       productId: 'nam',
       modelId: 'nam',
-      title: 'NAM / NAM Nest',
-      summary: 'NAM family guidance is listed in the public NOMADS inventory.',
-      url: nomadsUrl(),
+      title: 'NAM',
+      summary:
+        'Use NAM for short-range synoptic and mesoscale structure when comparing broader forcing and moisture placement.',
+      url: namUrl(),
+      sourceId: 'nam',
+      sourceName: 'NAM',
+    },
+    {
+      productId: 'nam-nest',
+      modelId: 'nam-nest',
+      title: 'NAM Nest',
+      summary:
+        'Use NAM Nest when you need a convection-allowing NAM family check on timing and storm mode.',
+      url: namUrl(),
+      sourceId: 'nam',
+      sourceName: 'NAM',
     },
     {
       productId: 'href',
       modelId: 'href',
       title: 'HREF',
       summary:
-        'The HREF ensemble is part of the public NOMADS model inventory.',
-      url: nomadsUrl(),
+        'Use HREF probabilities to represent the short-range spread and probability-style severe guidance better than a single deterministic run.',
+      url: hrefUrl(),
+      sourceId: 'href',
+      sourceName: 'HREF',
     },
-  ]
-  const preview = await buildModelPreview(
-    app,
-    location.name,
-    `Short-range model guidance snapshot for ${location.name}`,
-    products.map((product) => ({
-      sourceId: product.modelId,
-      modelLabel: product.title,
-      summary: product.summary,
-    })),
-  )
-
-  return buildWeatherEnvelope({
-    source: hrrr.source,
-    location,
-    units: 'model-guidance',
-    confidence: 0.6,
-    summary:
-      summarizeText(text, 260) ||
-      `Short-range model guidance for ${location.name}.`,
-    ...preview,
-    data: {
-      products,
-      notes: [
-        'These public pages expose the operational model families and their access points.',
-        'The next step is to add targeted gridded subset extraction for timing-sensitive answers.',
-      ],
-    },
-  })
-}
-
-export async function getBlendAndAnalysisGuidance(
-  app: FastifyInstance,
-  locationQuery: string,
-): Promise<WeatherEnvelope<ModelGuidanceData>> {
-  const location = await geocodeQuery(app, locationQuery)
-  const [blend, rtma] = await Promise.all([
-    loadModelPage(
-      app,
-      'nbm',
-      'nbm',
-      'National Blend of Models',
-      blendUrl(),
-      'model:blend',
-    ),
-    loadModelPage(app, 'rtma', 'rtma', 'RTMA / URMA', rtmaUrl(), 'model:rtma'),
-  ])
-  const text = stripHtml(`${blend.value} ${rtma.value}`)
-  const products = [
     {
       productId: 'nbm',
       modelId: 'nbm',
       title: 'National Blend of Models',
       summary:
-        "NBM provides NOAA's calibrated blend of model guidance for near-term weather.",
+        'Use NBM as the calibrated baseline for near-term sensible weather and precipitation timing.',
       url: blendUrl(),
+      sourceId: 'nbm',
+      sourceName: 'National Blend of Models',
     },
     {
       productId: 'rtma',
       modelId: 'rtma',
-      title: 'RTMA / URMA',
-      summary: 'RTMA and URMA provide near-real-time surface analysis fields.',
+      title: 'RTMA',
+      summary:
+        'Use RTMA to anchor the current surface state before trusting a model trend for the next few hours.',
       url: rtmaUrl(),
+      sourceId: 'rtma',
+      sourceName: 'RTMA',
     },
-  ]
-  const preview = await buildModelPreview(
-    app,
-    location.name,
-    `Blend and analysis snapshot for ${location.name}`,
-    products.map((product) => ({
-      sourceId: product.modelId,
-      modelLabel: product.title,
-      summary: product.summary,
-    })),
-  )
-
-  return buildWeatherEnvelope({
-    source: blend.source,
-    location,
-    units: 'analysis',
-    confidence: 0.63,
-    summary:
-      summarizeText(text, 240) ||
-      `Blend and analysis guidance for ${location.name}.`,
-    ...preview,
-    data: {
-      products,
-      notes: [
-        'Blend and analysis guidance should be used before pure model summaries when answering near-term surface questions.',
-      ],
+    {
+      productId: 'urma',
+      modelId: 'urma',
+      title: 'URMA',
+      summary:
+        'Use URMA as an analysis cross-check when the near-surface placement of boundaries or moisture matters.',
+      url: urmaUrl(),
+      sourceId: 'urma',
+      sourceName: 'URMA',
     },
-  })
+  ] satisfies Array<ModelProduct>
 }
 
-export async function getGlobalModelGuidance(
-  app: FastifyInstance,
-  locationQuery: string,
-): Promise<WeatherEnvelope<ModelGuidanceData>> {
-  const location = await geocodeQuery(app, locationQuery)
-  const [gfs, gefs, ecmwf] = await Promise.all([
-    loadModelPage(app, 'gfs', 'gfs', 'GFS', nomadsUrl(), 'model:gfs'),
-    loadModelPage(app, 'gefs', 'gefs', 'GEFS', nomadsUrl(), 'model:gefs'),
-    loadModelPage(
-      app,
-      'ecmwf-open-data',
-      'ecmwf-open-data',
-      'ECMWF Open Data',
-      ecmwfOpenDataUrl(),
-      'model:ecmwf',
-    ),
-  ])
-  const text = stripHtml(`${gfs.value} ${gefs.value} ${ecmwf.value}`)
-  const products = [
+function buildGlobalProducts() {
+  return [
     {
       productId: 'gfs',
       modelId: 'gfs',
       title: 'GFS',
       summary:
-        'The public NOMADS inventory exposes the global forecast system.',
-      url: nomadsUrl(),
+        'Use GFS for deterministic synoptic evolution and broad day 2 to day 10 pattern timing.',
+      url: gfsUrl(),
+      sourceId: 'gfs',
+      sourceName: 'GFS',
     },
     {
       productId: 'gefs',
       modelId: 'gefs',
       title: 'GEFS',
       summary:
-        'The global ensemble forecast system is also available through NOMADS.',
-      url: nomadsUrl(),
+        'Use GEFS to describe ensemble spread and how stable the larger-scale pattern looks.',
+      url: gefsUrl(),
+      sourceId: 'gefs',
+      sourceName: 'GEFS',
     },
     {
       productId: 'ecmwf-open-data',
       modelId: 'ecmwf-open-data',
       title: 'ECMWF Open Data',
       summary:
-        'ECMWF open data provides free access to a public subset of IFS and AIFS forecasts.',
+        'Use ECMWF open data as the external global comparison point for the day 2 to day 10 synoptic call.',
       url: ecmwfOpenDataUrl(),
+      sourceId: 'ecmwf-open-data',
+      sourceName: 'ECMWF Open Data',
     },
-  ]
-  const preview = await buildModelPreview(
-    app,
-    location.name,
-    `Global model guidance snapshot for ${location.name}`,
-    products.map((product) => ({
-      sourceId: product.modelId,
-      modelLabel: product.title,
-      summary: product.summary,
-    })),
-  )
+  ] satisfies Array<ModelProduct>
+}
+
+export async function getShortRangeGuidance(
+  app: FastifyInstance,
+  locationQuery: string,
+): Promise<WeatherEnvelope<ModelGuidanceData>> {
+  const location = await geocodeQuery(app, locationQuery)
+  const results = await Promise.allSettled([
+    loadModelPage(
+      app,
+      'href',
+      'href',
+      'HREF',
+      hrefUrl(),
+      'model:href',
+    ),
+    loadModelPage(
+      app,
+      'hrrr',
+      'hrrr',
+      'HRRR',
+      hrrrUrl(),
+      'model:hrrr',
+    ),
+    loadModelPage(
+      app,
+      'rap',
+      'rap',
+      'RAP',
+      rapUrl(),
+      'model:rap',
+    ),
+    loadModelPage(
+      app,
+      'nam',
+      'nam',
+      'NAM',
+      namUrl(),
+      'model:nam',
+    ),
+    loadModelPage(
+      app,
+      'nbm',
+      'national-blend-of-models',
+      'National Blend of Models',
+      blendUrl(),
+      'model:blend',
+    ),
+    loadModelPage(
+      app,
+      'rtma',
+      'real-time-mesoscale-analysis',
+      'RTMA',
+      rtmaUrl(),
+      'model:rtma',
+    ),
+    loadModelPage(
+      app,
+      'urma',
+      'unrestricted-mesoscale-analysis',
+      'URMA',
+      urmaUrl(),
+      'model:urma',
+    ),
+  ])
+
+  const successful = results
+    .filter(
+      (
+        result,
+      ): result is PromiseFulfilledResult<
+        Awaited<ReturnType<typeof loadModelPage>>
+      > => result.status === 'fulfilled',
+    )
+    .map((result) => result.value)
+
+  if (successful.length === 0) {
+    throw new Error('Short-range guidance could not be fetched.')
+  }
+
+  const products = buildShortRangeProducts()
+  const confidence = Math.max(0.58, Math.min(0.88, 0.56 + successful.length * 0.04))
+  const missingSources = settledFailures(results)
+  const headline =
+    `For the next 0 to 48 hours around ${location.name}, lean on HREF probabilities and RTMA/URMA analysis first, then use HRRR, RAP, and NAM family guidance for timing details.`
 
   return buildWeatherEnvelope({
-    source: gfs.source,
+    source: {
+      sourceId: 'href',
+      productId: 'short-range-guidance',
+      label: 'Short-range guidance blend',
+      url: hrefUrl(),
+    },
     location,
     units: 'model-guidance',
-    confidence: 0.58,
+    confidence,
+    validAt: successful[0].retrievedAt,
     summary:
-      summarizeText(text, 260) || `Global model guidance for ${location.name}.`,
-    ...preview,
+      summarizeText(
+        successful.map((entry) => stripHtml(entry.value)).join(' '),
+        280,
+      ) || `Short-range guidance context for ${location.name}.`,
+    normalizedForecast: {
+      domain: 'short-range-guidance',
+      headline,
+      mostLikelyScenario:
+        'The most stable short-range call should come from an observation-calibrated blend: HREF for spread, HRRR and RAP for timing, NAM family for structure, and NBM/RTMA/URMA for baseline placement.',
+      alternateScenarios: [
+        'Deterministic timing can jump around if the boundary placement or instability axis shifts.',
+      ],
+      likelihood: confidenceLevel(confidence),
+      confidence: confidenceLevel(confidence),
+      keySignals: [
+        buildSignal(products[4], products[4].summary, 'high'),
+        buildSignal(products[6], products[6].summary, 'high'),
+        buildSignal(products[0], products[0].summary, 'medium'),
+        buildSignal(products[1], products[1].summary, 'medium'),
+        buildSignal(products[5], products[5].summary, 'medium'),
+      ],
+      conflicts: missingSources.length
+        ? ['One or more short-range source pages were unavailable, so the guidance set is less complete than ideal.']
+        : [],
+      failureModes: [
+        'Storm-scale timing can drift quickly when mesoscale boundaries are misplaced.',
+        'A deterministic run should not be treated as the final answer when ensemble probabilities disagree.',
+      ],
+      whatWouldChange: [
+        'A different placement of the effective boundary, instability axis, or convective initiation corridor would change the near-term target.',
+      ],
+      productCards: [
+        productCard(products[4], 'primary'),
+        productCard(products[0]),
+        productCard(products[6]),
+        productCard(products[5]),
+      ],
+      recommendedProductIds: ['href', 'hrrr', 'rtma', 'nbm'],
+    },
     data: {
       products,
       notes: [
-        'Use this tool for days 2-10 synoptic questions and compare against WPC hazards when needed.',
+        'Short-range guidance is for timing and scenario support, not for reporting each model verbatim.',
+        'Near-term answers should still be calibrated against current observations, radar, satellite, and analysis fields.',
       ],
+      missingSources,
     },
+    citations: successful.map((entry) => ({
+      id: `${entry.source.sourceId}:${entry.source.productId}`,
+      label: entry.source.label,
+      sourceId: entry.source.sourceId,
+      productId: entry.source.productId,
+      url: entry.source.url,
+      issuedAt: entry.retrievedAt,
+    })),
   })
 }
 
-export type ModelComparisonInput = Array<{
-  sourceId: string
-  modelLabel: string
-  runTime: string
-  validTime: string
-  summary: string
-}>
+export async function getGlobalGuidance(
+  app: FastifyInstance,
+  locationQuery: string,
+): Promise<WeatherEnvelope<ModelGuidanceData>> {
+  const location = await geocodeQuery(app, locationQuery)
+  const results = await Promise.allSettled([
+    loadModelPage(app, 'gfs', 'gfs', 'GFS', gfsUrl(), 'model:gfs'),
+    loadModelPage(app, 'gefs', 'gefs', 'GEFS', gefsUrl(), 'model:gefs'),
+    loadModelPage(
+      app,
+      'ecmwf-open-data',
+      'ecmwf-open-data',
+      'ECMWF Open Data',
+      ecmwfOpenDataUrl(),
+      'model:ecmwf-open-data',
+    ),
+  ])
 
-export function compareModels(
-  locationName: string,
-  comparedModels: ModelComparisonInput,
-) {
-  const modelNames = comparedModels.map((model) => model.modelLabel).join(', ')
-  return {
-    locationName,
-    comparedModels,
-    consensus:
-      comparedModels.length > 0
-        ? `Compared ${modelNames} for ${locationName}.`
-        : `No model guidance was available for ${locationName}.`,
-    uncertainty:
-      comparedModels.length > 1
-        ? 'Model spread should be interpreted directly from the source guidance and not inferred from a single deterministic page.'
-        : 'A single model family cannot establish meaningful spread on its own.',
+  const successful = results
+    .filter(
+      (
+        result,
+      ): result is PromiseFulfilledResult<
+        Awaited<ReturnType<typeof loadModelPage>>
+      > => result.status === 'fulfilled',
+    )
+    .map((result) => result.value)
+
+  if (successful.length === 0) {
+    throw new Error('Global guidance could not be fetched.')
   }
+
+  const products = buildGlobalProducts()
+  const confidence = Math.max(0.56, Math.min(0.82, 0.58 + successful.length * 0.06))
+  const missingSources = settledFailures(results)
+  const headline =
+    `For day 2 to day 10 questions around ${location.name}, combine GFS and GEFS with ECMWF open data into one synoptic call instead of narrating each model separately.`
+
+  return buildWeatherEnvelope({
+    source: {
+      sourceId: 'gfs',
+      productId: 'global-guidance',
+      label: 'Global guidance blend',
+      url: gfsUrl(),
+    },
+    location,
+    units: 'model-guidance',
+    confidence,
+    validAt: successful[0].retrievedAt,
+    summary:
+      summarizeText(
+        successful.map((entry) => stripHtml(entry.value)).join(' '),
+        280,
+      ) || `Global guidance context for ${location.name}.`,
+    normalizedForecast: {
+      domain: 'global-guidance',
+      headline,
+      mostLikelyScenario:
+        'The most defensible medium-range answer is a single synoptic pattern call that uses GFS for deterministic evolution, GEFS for spread, and ECMWF open data for cross-model confirmation.',
+      alternateScenarios: [
+        'Confidence should drop quickly when GEFS spread widens or the ECMWF and GFS pattern timing diverge.',
+      ],
+      likelihood: confidenceLevel(confidence),
+      confidence: confidenceLevel(confidence),
+      keySignals: [
+        buildSignal(products[0], products[0].summary, 'medium'),
+        buildSignal(products[1], products[1].summary, 'high'),
+        buildSignal(products[2], products[2].summary, 'high'),
+      ],
+      conflicts: missingSources.length
+        ? ['One or more global guidance sources were unavailable, so the day 2 to day 10 comparison is less complete.']
+        : [],
+      failureModes: [
+        'Medium-range confidence drops when ensemble spread grows or the trough/ridge timing slows or speeds up.',
+      ],
+      whatWouldChange: [
+        'A larger change in GEFS spread or a meaningful timing difference between GFS and ECMWF would change the pattern call.',
+      ],
+      productCards: [
+        productCard(products[2], 'primary'),
+        productCard(products[1]),
+        productCard(products[0]),
+      ],
+      recommendedProductIds: ['ecmwf-open-data', 'gefs', 'gfs'],
+    },
+    data: {
+      products,
+      notes: [
+        'Global guidance should end in a single pattern judgment with uncertainty, not a side-by-side model report.',
+      ],
+      missingSources,
+    },
+    citations: successful.map((entry) => ({
+      id: `${entry.source.sourceId}:${entry.source.productId}`,
+      label: entry.source.label,
+      sourceId: entry.source.sourceId,
+      productId: entry.source.productId,
+      url: entry.source.url,
+      issuedAt: entry.retrievedAt,
+    })),
+  })
+}
+
+export async function getShortRangeModelGuidance(
+  app: FastifyInstance,
+  locationQuery: string,
+) {
+  return getShortRangeGuidance(app, locationQuery)
+}
+
+export async function getBlendAndAnalysisGuidance(
+  app: FastifyInstance,
+  locationQuery: string,
+) {
+  return getShortRangeGuidance(app, locationQuery)
+}
+
+export async function getGlobalModelGuidance(
+  app: FastifyInstance,
+  locationQuery: string,
+) {
+  return getGlobalGuidance(app, locationQuery)
 }

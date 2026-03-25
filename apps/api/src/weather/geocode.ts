@@ -2,7 +2,7 @@ import { normalizedLocationSchema } from '@raincheck/contracts'
 import type { FastifyInstance } from 'fastify'
 
 import { AppError } from '../lib/errors'
-import { cacheKey, fetchWeatherJson } from './runtime'
+import { cacheKey, fetchWeatherJson, normalizeWhitespace } from './runtime'
 
 const latLonPattern = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/
 
@@ -97,6 +97,18 @@ type OpenMeteoSearchHint = {
   regionText: string
 }
 
+const addressKeywordPattern =
+  /\b(st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|ln|lane|way|hwy|highway|pkwy|parkway|ct|court|cir|circle|trl|trail|pl|place|suite|ste|apt|unit)\b/i
+
+const zipCodePattern = /\b\d{5}(?:-\d{4})?\b/
+
+const houseNumberPattern = /^\s*\d+\b/
+
+const geocodeTimeoutMs = 700
+
+const embeddedLocationPattern =
+  /\b(?:in|for|near|around|across|over|at|from)\s+(.+?)(?=\s+(?:where|what|when|why|how|because|according|based|today|tonight|tomorrow|this|next|should|could|would|can|will|need|needs|show|see|avoid|head|expect|best|most|risk|risks)\b|[?!.;]|$)/i
+
 function normalizeMatchValue(value: string | undefined) {
   return value?.trim().toLowerCase().replace(/[.,]/g, '') ?? ''
 }
@@ -128,6 +140,37 @@ function buildUsStateHint(query: string): OpenMeteoSearchHint | null {
   }
 
   return null
+}
+
+function buildStateLevelHint(query: string): OpenMeteoSearchHint | null {
+  const trimmed = query.trim().replace(/\.+$/, '')
+  if (!trimmed) {
+    return null
+  }
+
+  const upperCode = trimmed.toUpperCase()
+  if (upperCode in usStatesByCode) {
+    const name = usStatesByCode[upperCode as keyof typeof usStatesByCode]
+    return {
+      baseQuery: name,
+      expectedAdmin1: name,
+      expectedCountryCode: 'US',
+      regionText: name,
+    }
+  }
+
+  const stateCode = usStateCodesByName[trimmed.toLowerCase()]
+  if (!stateCode) {
+    return null
+  }
+
+  const name = usStatesByCode[stateCode]
+  return {
+    baseQuery: name,
+    expectedAdmin1: name,
+    expectedCountryCode: 'US',
+    regionText: name,
+  }
 }
 
 function buildTrailingRegionHint(query: string): OpenMeteoSearchHint | null {
@@ -165,7 +208,11 @@ function buildTrailingRegionHint(query: string): OpenMeteoSearchHint | null {
 }
 
 function buildOpenMeteoHints(query: string) {
-  const candidates = [buildUsStateHint(query), buildTrailingRegionHint(query)]
+  const candidates = [
+    buildStateLevelHint(query),
+    buildUsStateHint(query),
+    buildTrailingRegionHint(query),
+  ]
   const seen = new Set<string>()
 
   return candidates.filter((candidate): candidate is OpenMeteoSearchHint => {
@@ -215,6 +262,46 @@ function buildRegionalUsStateFallback(query: string) {
   return null
 }
 
+function trimLocationFragment(value: string) {
+  return value.replace(/^[,;:\s]+|[,;:\s]+$/g, '').trim()
+}
+
+function extractEmbeddedLocationQuery(query: string) {
+  const normalized = normalizeWhitespace(query.replace(/^me:\s*/i, ' '))
+  if (!normalized) {
+    return normalized
+  }
+
+  const embeddedMatch = normalized.match(embeddedLocationPattern)
+  const embeddedLocation = embeddedMatch?.[1]
+    ? trimLocationFragment(embeddedMatch[1])
+    : ''
+
+  if (embeddedLocation && embeddedLocation.split(/\s+/).length <= 6) {
+    return embeddedLocation
+  }
+
+  return normalized
+}
+
+function isLikelyAddressQuery(query: string) {
+  return (
+    houseNumberPattern.test(query) ||
+    zipCodePattern.test(query) ||
+    addressKeywordPattern.test(query)
+  )
+}
+
+function buildGeocodeRequestInit(): RequestInit | undefined {
+  if (typeof AbortSignal?.timeout !== 'function') {
+    return undefined
+  }
+
+  return {
+    signal: AbortSignal.timeout(geocodeTimeoutMs),
+  }
+}
+
 function pickOpenMeteoResult(
   results: NonNullable<OpenMeteoResponse['results']>,
   hint?: OpenMeteoSearchHint,
@@ -227,6 +314,7 @@ function pickOpenMeteoResult(
     return results[0]
   }
 
+  const normalizedBaseQuery = normalizeMatchValue(hint.baseQuery)
   const normalizedRegion = normalizeMatchValue(hint.regionText)
   const normalizedAdmin1 = normalizeMatchValue(hint.expectedAdmin1)
   const expectedCountryCode = hint.expectedCountryCode?.toUpperCase()
@@ -239,8 +327,38 @@ function pickOpenMeteoResult(
       return false
     }
 
-    if (normalizedAdmin1) {
-      return normalizeMatchValue(result.admin1) === normalizedAdmin1
+    const matchesBaseQuery = normalizedBaseQuery
+      ? [
+          normalizeMatchValue(result.name),
+          normalizeMatchValue(result.admin1),
+        ].includes(normalizedBaseQuery)
+      : false
+    const matchesAdmin1 = normalizedAdmin1
+      ? normalizeMatchValue(result.admin1) === normalizedAdmin1
+      : false
+
+    if (
+      normalizedBaseQuery &&
+      normalizedAdmin1 &&
+      matchesBaseQuery &&
+      matchesAdmin1
+    ) {
+      return true
+    }
+
+    if (matchesAdmin1) {
+      return true
+    }
+
+    if (
+      normalizedAdmin1 &&
+      normalizeMatchValue(result.name) === normalizedAdmin1
+    ) {
+      return true
+    }
+
+    if (matchesBaseQuery && !normalizedAdmin1) {
+      return true
     }
 
     if (!normalizedRegion) {
@@ -254,7 +372,7 @@ function pickOpenMeteoResult(
     ].includes(normalizedRegion)
   })
 
-  return exactMatch ?? results[0]
+  return exactMatch ?? null
 }
 
 function formatOpenMeteoLocationName(location: {
@@ -271,14 +389,21 @@ function formatOpenMeteoLocationName(location: {
 
 async function resolveWithCensus(app: FastifyInstance, query: string) {
   const censusUrl = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?benchmark=Public_AR_Current&format=json&address=${encodeURIComponent(query)}`
-  const census = await fetchWeatherJson<CensusResponse>(app, {
-    sourceId: 'us-census-geocoder',
-    productId: 'address-normalization',
-    label: 'U.S. Census Geocoder',
-    url: censusUrl,
-    cacheKey: cacheKey('geocode', 'census', query.toLowerCase()),
-    ttlMs: 30 * 60 * 1000,
-  })
+  const census = await fetchWeatherJson<CensusResponse>(
+    app,
+    {
+      sourceId: 'us-census-geocoder',
+      productId: 'address-normalization',
+      label: 'U.S. Census Geocoder',
+      url: censusUrl,
+      cacheKey: cacheKey('geocode', 'census', query.toLowerCase()),
+      ttlMs: 30 * 60 * 1000,
+      retries: 0,
+    },
+    {
+      requestInit: buildGeocodeRequestInit(),
+    },
+  )
 
   const censusMatch = census.value?.result.addressMatches[0]
   if (!censusMatch) {
@@ -330,20 +455,27 @@ async function resolveWithOpenMeteo(app: FastifyInstance, query: string) {
     }
 
     const url = `https://geocoding-api.open-meteo.com/v1/search?${params.toString()}`
-    const response = await fetchWeatherJson<OpenMeteoResponse>(app, {
-      sourceId: 'open-meteo-geocoding',
-      productId: 'global-place-search',
-      label: 'Open-Meteo Geocoding API',
-      url,
-      cacheKey: cacheKey(
-        'geocode',
-        'open-meteo',
-        attempt.name.toLowerCase(),
-        attempt.hint?.expectedCountryCode ?? '',
-        attempt.hint?.expectedAdmin1 ?? '',
-      ),
-      ttlMs: 30 * 60 * 1000,
-    })
+    const response = await fetchWeatherJson<OpenMeteoResponse>(
+      app,
+      {
+        sourceId: 'open-meteo-geocoding',
+        productId: 'global-place-search',
+        label: 'Open-Meteo Geocoding API',
+        url,
+        cacheKey: cacheKey(
+          'geocode',
+          'open-meteo',
+          attempt.name.toLowerCase(),
+          attempt.hint?.expectedCountryCode ?? '',
+          attempt.hint?.expectedAdmin1 ?? '',
+        ),
+        ttlMs: 30 * 60 * 1000,
+        retries: 0,
+      },
+      {
+        requestInit: buildGeocodeRequestInit(),
+      },
+    )
     const match = pickOpenMeteoResult(
       response.value.results ?? [],
       attempt.hint,
@@ -385,9 +517,10 @@ function toProviderFailure(provider: string, error: unknown) {
 }
 
 export async function geocodeQuery(app: FastifyInstance, query: string) {
-  const trimmed = query.trim()
+  const trimmed = extractEmbeddedLocationQuery(query)
   const latLonMatch = trimmed.match(latLonPattern)
   const regionalStateFallback = buildRegionalUsStateFallback(trimmed)
+  const effectiveQuery = regionalStateFallback ?? trimmed
   const failures: Array<ReturnType<typeof toProviderFailure>> = []
 
   if (!trimmed) {
@@ -409,50 +542,45 @@ export async function geocodeQuery(app: FastifyInstance, query: string) {
     })
   }
 
-  try {
-    const census = await resolveWithCensus(app, trimmed)
-    if (census) {
-      return census
-    }
-  } catch (error) {
-    failures.push(toProviderFailure('us-census-geocoder', error))
-  }
+  const resolutionSteps = isLikelyAddressQuery(effectiveQuery)
+    ? [
+        {
+          provider: 'us-census-geocoder',
+          resolve: () => resolveWithCensus(app, effectiveQuery),
+        },
+        {
+          provider: 'open-meteo-geocoding',
+          resolve: () => resolveWithOpenMeteo(app, effectiveQuery),
+        },
+      ]
+    : [
+        {
+          provider: 'open-meteo-geocoding',
+          resolve: () => resolveWithOpenMeteo(app, effectiveQuery),
+        },
+        {
+          provider: 'us-census-geocoder',
+          resolve: () => resolveWithCensus(app, effectiveQuery),
+        },
+      ]
 
-  try {
-    const openMeteo = await resolveWithOpenMeteo(app, trimmed)
-    if (openMeteo) {
-      return openMeteo
-    }
-  } catch (error) {
-    failures.push(toProviderFailure('open-meteo-geocoding', error))
-  }
-
-  if (
-    regionalStateFallback &&
-    regionalStateFallback.toLowerCase() !== trimmed.toLowerCase()
-  ) {
+  for (const step of resolutionSteps) {
     try {
-      const census = await resolveWithCensus(app, regionalStateFallback)
-      if (census) {
+      const location = await step.resolve()
+      if (!location) {
+        continue
+      }
+
+      if (effectiveQuery !== trimmed) {
         return normalizedLocationSchema.parse({
-          ...census,
+          ...location,
           query: trimmed,
         })
       }
-    } catch (error) {
-      failures.push(toProviderFailure('us-census-geocoder', error))
-    }
 
-    try {
-      const openMeteo = await resolveWithOpenMeteo(app, regionalStateFallback)
-      if (openMeteo) {
-        return normalizedLocationSchema.parse({
-          ...openMeteo,
-          query: trimmed,
-        })
-      }
+      return location
     } catch (error) {
-      failures.push(toProviderFailure('open-meteo-geocoding', error))
+      failures.push(toProviderFailure(step.provider, error))
     }
   }
 

@@ -8,26 +8,26 @@ describe('prepareMessagesForProvider', () => {
       [
         {
           role: 'assistant',
-          content: 'Resolved Yorkville and fetched the forecast.',
+          content: 'Fetched the forecast for Yorkville.',
           parts: [
             {
               type: 'text',
-              content: 'Resolved Yorkville and fetched the forecast.',
+              content: 'Fetched the forecast for Yorkville.',
             },
             {
               type: 'tool-call',
               id: 'tool-1',
-              name: 'resolve_location',
-              arguments: '{"query":"Yorkville, IL"}',
+              name: 'get_forecast',
+              arguments: '{"locationQuery":"Yorkville, IL","horizon":"short"}',
               state: 'input-complete',
               output: {
-                name: 'Yorkville, Illinois, United States',
+                summary: 'Yorkville stays dry tonight.',
               },
             },
             {
               type: 'tool-result',
               toolCallId: 'tool-1',
-              content: '{"name":"Yorkville, Illinois, United States"}',
+              content: '{"summary":"Yorkville stays dry tonight."}',
               state: 'complete',
             },
           ],
@@ -49,11 +49,11 @@ describe('prepareMessagesForProvider', () => {
     expect(messages).toEqual([
       {
         role: 'assistant',
-        content: 'Resolved Yorkville and fetched the forecast.',
+        content: 'Fetched the forecast for Yorkville.',
         parts: [
           {
             type: 'text',
-            content: 'Resolved Yorkville and fetched the forecast.',
+            content: 'Fetched the forecast for Yorkville.',
           },
         ],
       },
@@ -70,22 +70,44 @@ describe('prepareMessagesForProvider', () => {
     ])
   })
 
-  it('leaves non-gemini histories untouched', () => {
-    const messages = [
+  it('strips historical tool parts for non-gemini providers too', () => {
+    const messages = prepareMessagesForProvider(
+      [
+        {
+          role: 'assistant',
+          content: 'Fetched alerts for Chicago before answering.',
+          parts: [
+            {
+              type: 'text',
+              content: 'Fetched alerts for Chicago before answering.',
+            },
+            {
+              type: 'tool-call',
+              id: 'tool-1',
+              name: 'get_alerts',
+              arguments: '{"locationQuery":"Chicago"}',
+              state: 'input-complete',
+              output: {
+                summary: 'No active alerts for Chicago.',
+              },
+            },
+          ],
+        },
+      ],
+      'openai',
+    )
+
+    expect(messages).toEqual([
       {
         role: 'assistant',
+        content: 'Fetched alerts for Chicago before answering.',
         parts: [
           {
-            type: 'tool-call',
-            id: 'tool-1',
-            name: 'resolve_location',
-            arguments: '{"query":"Chicago"}',
-            state: 'input-complete',
+            type: 'text',
+            content: 'Fetched alerts for Chicago before answering.',
           },
         ],
       },
-    ]
-
-    expect(prepareMessagesForProvider(messages, 'openai')).toBe(messages)
+    ])
   })
 })

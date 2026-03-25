@@ -40,25 +40,23 @@ test('new thread flow creates a conversation from the landing page', async ({
   await expect(page.getByText('Current conditions')).toBeVisible()
 })
 
-test('research flow reloads an artifact card and opens the viewer', async ({
+test('severe target flow reloads a conclusion and product cards', async ({
   page,
 }) => {
   await page.goto('/chat/thread-research')
   await sendPrompt(
     page,
-    'Compare HRRR and GFS and make a research brief for Austin.',
+    'Where is the best tornado target near Austin tonight?',
   )
 
   await page.reload({ waitUntil: 'domcontentloaded' })
 
+  await expect(page.getByText('Weather conclusion')).toBeVisible()
   await expect(
-    page.getByRole('button', { name: 'Open artifact' }),
+    page.getByText('A narrow boundary near Austin is the best severe-weather focus.'),
   ).toBeVisible()
-  await page.getByRole('button', { name: 'Open artifact' }).click()
-  await expect(page.getByText('Research report for Austin, TX')).toBeVisible()
-  await expect(
-    page.locator('iframe[title="Research report for Austin, TX"]'),
-  ).toBeVisible()
+  await expect(page.getByText('SPC severe context')).toBeVisible()
+  await expect(page.getByText('Radar and nowcast')).toBeVisible()
 })
 
 test('conversation history lets you delete a past thread', async ({ page }) => {
@@ -72,18 +70,18 @@ test('conversation history lets you delete a past thread', async ({ page }) => {
 
   page.once('dialog', async (dialog) => {
     expect(dialog.type()).toBe('confirm')
-    expect(dialog.message()).toContain('Austin research')
+    expect(dialog.message()).toContain('Austin severe setup')
     await dialog.accept()
   })
 
   await page
-    .getByRole('button', { name: 'Delete conversation Austin research' })
+    .getByRole('button', { name: 'Delete conversation Austin severe setup' })
     .click()
 
   await deleteResponse
   await page.waitForURL(/\/$/)
   await expect(page.locator('.conversation-list')).not.toContainText(
-    'Austin research',
+    'Austin severe setup',
   )
   await expect(page.locator('.empty-thread .sidebar-brand')).toBeVisible()
 })

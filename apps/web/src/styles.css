@@ -155,7 +155,8 @@ button {
 .conversation-row {
   display: flex;
   align-items: stretch;
-  gap: 4px;
+  position: relative;
+  min-width: 0;
 }
 
 .conversation-link {
@@ -166,7 +167,16 @@ button {
   padding: 10px 12px;
   text-decoration: none;
   color: var(--text-soft);
-  transition: background-color 120ms ease;
+  transition: background-color 120ms ease, padding-right 120ms ease;
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+}
+
+.conversation-row:hover .conversation-link,
+.conversation-row:focus-within .conversation-link,
+.conversation-row:has(.conversation-menu-btn.is-visible) .conversation-link {
+  padding-right: 36px;
 }
 
 .conversation-link:hover {
@@ -179,38 +189,103 @@ button {
   color: var(--text);
 }
 
-.conversation-delete {
-  width: 32px;
-  height: 32px;
-  margin: auto 0;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
+.conversation-menu-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: var(--bg-strong, var(--bg));
   color: var(--text-soft);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   opacity: 0;
   pointer-events: none;
+  cursor: pointer;
+  z-index: 2;
   transition:
     opacity 120ms ease,
-    background-color 120ms ease,
-    border-color 120ms ease,
-    color 120ms ease;
+    background-color 120ms ease;
 }
 
-.conversation-row:hover .conversation-delete,
-.conversation-row:focus-within .conversation-delete,
-.conversation-link.is-active + .conversation-delete {
+.conversation-row:hover .conversation-menu-btn,
+.conversation-row:focus-within .conversation-menu-btn,
+.conversation-link.is-active + .conversation-menu-btn,
+.conversation-menu-btn.is-visible {
   opacity: 1;
   pointer-events: auto;
 }
 
-.conversation-delete:hover:not(:disabled),
-.conversation-delete:focus-visible:not(:disabled) {
-  border-color: transparent;
-  background: var(--danger-soft);
+.conversation-menu-btn:hover {
+  background: var(--accent-soft);
   color: var(--text);
+}
+
+.conversation-section-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-soft);
+  padding: 12px 12px 4px;
+}
+
+.conversation-rename-input {
+  font-size: 0.88rem;
+  font-weight: 600;
+  font-family: inherit;
+  width: 100%;
+  padding: 2px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+}
+
+/* ── Context menu (three-dot popover) ────────── */
+
+.context-menu {
+  min-width: 160px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--bg-strong);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  z-index: 200;
+  padding: 4px;
+  animation: popover-in 120ms ease;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.84rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+
+.context-menu-item:hover {
+  background: var(--accent-soft);
+}
+
+.context-menu-item.is-danger {
+  color: var(--danger, #ef4444);
+}
+
+.context-menu-item.is-danger:hover {
+  background: var(--danger-soft);
 }
 
 .conversation-title {
@@ -577,43 +652,37 @@ button {
   background: rgba(142, 39, 39, 0.72);
 }
 
-.product-card-body {
+.product-card-footer {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding: 14px 15px 16px;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 14px;
 }
 
-.product-card-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.product-card-header p {
+.product-card-footer p {
   margin: 0;
-  font-size: 0.98rem;
-  font-weight: 700;
+  font-size: 0.88rem;
+  font-weight: 600;
   color: var(--text);
 }
 
-.product-card-header span {
+.product-card-footer span {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.product-card-footer a {
   color: var(--text-soft);
   font-size: 0.76rem;
+  text-decoration: none;
   white-space: nowrap;
 }
 
-.product-card-location,
-.product-card-summary {
-  margin: 0;
-  color: var(--text-soft);
-  line-height: 1.55;
-  font-size: 0.82rem;
-}
-
-.product-card-summary {
+.product-card-footer a:hover {
   color: var(--text);
+  text-decoration: underline;
 }
 
 .tool-card-header {
@@ -677,6 +746,13 @@ button {
   gap: 1px;
   border-radius: 10px;
   overflow: hidden;
+}
+
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
 }
 
 .forecast-row,
@@ -1253,23 +1329,37 @@ textarea:focus-visible {
   outline-offset: 1px;
 }
 
-/* ── Progress pills ───────────────────────── */
+/* ── Assistant status row ─────────────────── */
 
-.progress-rail {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding-left: 0;
-}
-
-.progress-pill {
+.assistant-status {
   display: inline-flex;
   align-items: center;
-  padding: 5px 10px;
-  border-radius: 999px;
-  background: var(--accent-soft);
+  gap: 10px;
+  min-height: 24px;
   color: var(--text-soft);
-  font-size: 0.76rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  animation: assistant-status-rise 180ms ease;
+}
+
+.assistant-status-label {
+  color: inherit;
+}
+
+.assistant-status.is-error {
+  color: var(--danger, #ef4444);
+}
+
+@keyframes assistant-status-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ── Settings modal ───────────────────────── */
@@ -1476,7 +1566,7 @@ textarea:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .product-card-header {
+  .product-card-footer {
     flex-direction: column;
     align-items: flex-start;
   }

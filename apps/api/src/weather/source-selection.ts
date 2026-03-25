@@ -7,29 +7,30 @@ import { weatherSourceCatalog } from '@raincheck/contracts'
 
 const sourcePriority: Record<string, number> = {
   'weather-gov': 1,
-  nwps: 2,
-  spc: 3,
-  wpc: 4,
-  'aviationweather-gov': 5,
-  nhc: 6,
-  nexrad: 7,
-  goes: 8,
-  mrms: 9,
+  spc: 2,
+  wpc: 3,
+  nwps: 4,
+  nexrad: 5,
+  goes: 6,
+  mrms: 7,
+  'aviationweather-gov': 8,
+  href: 9,
   hrrr: 10,
   rap: 11,
   nam: 12,
-  href: 13,
-  nbm: 14,
-  rtma: 15,
-  urma: 16,
+  nbm: 13,
+  rtma: 14,
+  urma: 15,
+  'wpc-medium': 16,
   gfs: 17,
   gefs: 18,
   'ecmwf-open-data': 19,
-  wavewatch3: 20,
-  rtofs: 21,
-  'upper-air': 22,
-  'ncei-cdo': 23,
-  'ncei-storm-events': 24,
+  nhc: 20,
+  wavewatch3: 21,
+  rtofs: 22,
+  'upper-air': 23,
+  'ncei-cdo': 24,
+  'ncei-storm-events': 25,
   'us-census-geocoder': 30,
   'open-meteo-geocoding': 31,
   geonames: 32,
@@ -44,7 +45,8 @@ function orderEntries(
   )
 
   return [...entries].sort((left, right) => {
-    const leftRequestRank = requestOrder.get(left.sourceId) ?? Number.MAX_SAFE_INTEGER
+    const leftRequestRank =
+      requestOrder.get(left.sourceId) ?? Number.MAX_SAFE_INTEGER
     const rightRequestRank =
       requestOrder.get(right.sourceId) ?? Number.MAX_SAFE_INTEGER
     if (leftRequestRank !== rightRequestRank) {
@@ -78,31 +80,40 @@ function sourceIdsForIntent(intent: RequestClassification['intent']) {
     case 'aviation':
       return ['aviationweather-gov', 'weather-gov']
     case 'severe-weather':
-      return ['weather-gov', 'spc', 'nexrad', 'goes', 'mrms']
+      return [
+        'spc',
+        'weather-gov',
+        'nexrad',
+        'goes',
+        'mrms',
+        'href',
+        'hrrr',
+        'rap',
+        'nam',
+        'nbm',
+        'rtma',
+        'urma',
+      ]
     case 'fire-weather':
       return ['spc-fire', 'weather-gov']
     case 'precipitation':
-      return ['wpc', 'nwps', 'mrms', 'weather-gov']
-    case 'winter-weather':
-      return ['wpc-winter', 'weather-gov', 'hrrr', 'nam', 'href', 'nbm']
-    case 'medium-range':
-      return ['wpc-medium', 'gfs', 'gefs', 'ecmwf-open-data']
+      return ['wpc', 'nwps', 'weather-gov', 'mrms']
     case 'hydrology':
-      return ['nwps', 'weather-gov', 'mrms', 'wpc']
+      return ['nwps', 'wpc', 'weather-gov', 'mrms']
+    case 'winter-weather':
+      return ['wpc-winter', 'weather-gov', 'href', 'hrrr', 'nam', 'nbm']
+    case 'medium-range':
+      return ['wpc-medium', 'gfs', 'gefs', 'ecmwf-open-data', 'weather-gov']
     case 'radar':
     case 'radar-analysis':
-      return ['nexrad', 'mrms', 'weather-gov', 'spc']
     case 'satellite':
-      return ['goes', 'weather-gov']
     case 'mrms':
-      return ['mrms', 'nexrad', 'weather-gov']
+      return ['nexrad', 'goes', 'mrms', 'weather-gov', 'spc']
     case 'short-range-model':
-      return ['hrrr', 'rap', 'nam', 'href', 'nbm', 'weather-gov']
     case 'blend-analysis':
-      return ['nbm', 'rtma', 'urma', 'weather-gov']
+      return ['href', 'hrrr', 'rap', 'nam', 'nbm', 'rtma', 'urma', 'weather-gov']
     case 'global-model':
-    case 'model-comparison':
-      return ['gfs', 'gefs', 'ecmwf-open-data', 'wpc-medium', 'weather-gov']
+      return ['wpc-medium', 'gfs', 'gefs', 'ecmwf-open-data', 'weather-gov']
     case 'tropical':
       return ['nhc', 'weather-gov']
     case 'marine':
@@ -123,6 +134,13 @@ function sourceIdsForIntent(intent: RequestClassification['intent']) {
         'nexrad',
         'goes',
         'mrms',
+        'href',
+        'hrrr',
+        'rap',
+        'nam',
+        'nbm',
+        'rtma',
+        'urma',
         'gfs',
         'gefs',
         'ecmwf-open-data',
@@ -143,27 +161,37 @@ function reasonForSource(
 ) {
   switch (entry.sourceId) {
     case 'weather-gov':
-      return 'Official public forecast, observations, and alerts should anchor the answer.'
-    case 'aviationweather-gov':
-      return 'Aviation products should lead airport and flight-weather answers.'
-    case 'nwps':
-      return 'River and flood-stage questions should lead with NWPS.'
+      return 'Official forecasts, observations, and alerts should anchor the final answer.'
     case 'spc':
     case 'spc-fire':
-      return 'SPC outlook context should lead severe and fire-weather risk answers.'
+      return 'SPC official outlook context should lead severe and fire-weather reasoning.'
     case 'wpc':
     case 'wpc-winter':
     case 'wpc-medium':
-      return 'WPC products add national-scale precipitation, winter, and medium-range hazard context.'
-    case 'nhc':
-      return 'NHC products should lead public tropical-weather answers.'
+      return 'WPC products add the impact-oriented precipitation, winter, and medium-range context.'
+    case 'nwps':
+      return 'River and flood questions should lead with NWPS gauge and forecast context.'
     case 'nexrad':
     case 'goes':
     case 'mrms':
-      return 'Nowcasting sources should support current-conditions and active-weather timing questions.'
+      return 'Real-time nowcast sources should outrank model guidance for current and near-term questions.'
+    case 'href':
+    case 'hrrr':
+    case 'rap':
+    case 'nam':
+    case 'nbm':
+    case 'rtma':
+    case 'urma':
+      return 'Short-range guidance should support the answer after official context and observations are established.'
+    case 'gfs':
+    case 'gefs':
+    case 'ecmwf-open-data':
+      return 'Global guidance should be synthesized into one day 2 to day 10 pattern call with uncertainty.'
+    case 'aviationweather-gov':
+      return 'Aviation products should lead airport and flight-weather answers.'
     case 'ncei-cdo':
     case 'ncei-storm-events':
-      return 'Historical and climate questions should use archival NOAA sources instead of short-range forecasts.'
+      return 'Historical and climate questions should use NOAA archival sources instead of current forecast products.'
     default:
       return `Selected for the ${intent} workflow.`
   }

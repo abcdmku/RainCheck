@@ -20,3 +20,5 @@ RainCheck keeps agent usage deliberately small and concrete.
 - Prefer switch statements and straightforward data flows over abstraction layers.
 - Hide incomplete features rather than surfacing broken UI.
 - Keep the chat workflow primary on every platform.
+- Use `fetch -> normalize -> synthesize -> answer` for multi-source weather analysis.
+- Never add or restore comparison-table or model-comparison artifacts.

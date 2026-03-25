@@ -45,6 +45,7 @@ export type UserSettings = z.infer<typeof userSettingsSchema>
 export const conversationSchema = z.object({
   id: z.string(),
   title: z.string(),
+  pinned: z.boolean().default(false),
   createdAt: z.string(),
   updatedAt: z.string(),
   latestPreview: z.string().nullable().default(null),

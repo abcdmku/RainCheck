@@ -16,7 +16,6 @@ type BaseArtifactType =
   | 'skewt'
   | 'rainfall-chart'
   | 'snowfall-chart'
-  | 'model-comparison-panel'
   | 'brief-report'
 
 type ArtifactChartPoint = {
@@ -37,15 +36,6 @@ type ArtifactLoopFrame = {
   imageUrl?: string
 }
 
-type ArtifactComparisonModel = {
-  sourceId: string
-  modelLabel: string
-  summary: string
-  confidence?: string
-  cycleTime?: string
-  validTime?: string
-}
-
 type ArtifactSoundingLevel = {
   pressureHpa: number
   temperatureC?: number
@@ -61,7 +51,6 @@ type ArtifactOptions = {
   chartPoints?: Array<ArtifactChartPoint>
   chartSeries?: Array<ArtifactChartSeries>
   frames?: Array<ArtifactLoopFrame>
-  comparisonModels?: Array<ArtifactComparisonModel>
   soundingLevels?: Array<ArtifactSoundingLevel>
   thresholds?: Array<ArtifactChartPoint>
   sections?: Array<string>
@@ -219,41 +208,6 @@ function buildInfoSvg(
   </html>`
 }
 
-function buildModelComparisonSvg(
-  locationQuery: string,
-  prompt: string,
-  models: Array<ArtifactComparisonModel>,
-) {
-  const cards = models
-    .slice(0, 4)
-    .map((model, index) => {
-      const x = 28 + (index % 2) * 332
-      const y = 92 + Math.floor(index / 2) * 82
-      const detailLine = [
-        model.cycleTime ? `Run ${model.cycleTime}` : null,
-        model.validTime ? `Valid ${model.validTime}` : null,
-      ]
-        .filter(Boolean)
-        .join(' | ')
-
-      return `
-        <rect x="${x}" y="${y}" width="304" height="66" rx="14" fill="#0f1d22" stroke="#23363f" />
-        <text x="${x + 14}" y="${y + 22}" fill="#ffd47a" font-family="sans-serif" font-size="13">${escapeHtml(model.modelLabel)}</text>
-        <text x="${x + 14}" y="${y + 39}" fill="#86a0a5" font-family="sans-serif" font-size="10">${escapeHtml(detailLine || model.sourceId)}</text>
-        <text x="${x + 14}" y="${y + 55}" fill="#dce7e7" font-family="sans-serif" font-size="11">${escapeHtml(model.summary.slice(0, 52))}</text>
-      `
-    })
-    .join('')
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="280" viewBox="0 0 720 280">
-    <rect width="720" height="280" rx="22" fill="#091419" />
-    <text x="28" y="36" fill="#eef5f5" font-family="sans-serif" font-size="20">RainCheck Model Comparison</text>
-    <text x="28" y="58" fill="#9ab2b6" font-family="sans-serif" font-size="12">${escapeHtml(locationQuery)}</text>
-    <text x="28" y="76" fill="#7f999e" font-family="sans-serif" font-size="11">${escapeHtml(prompt)}</text>
-    ${cards || '<text x="28" y="120" fill="#dce7e7" font-family="sans-serif" font-size="12">No model rows were supplied.</text>'}
-  </svg>`
-}
-
 function buildReportHtml(
   title: string,
   locationQuery: string,
@@ -320,7 +274,7 @@ function resolveChartPoints(
 
 function buildGenericChartFallback(
   app: FastifyInstance,
-  artifactType: Exclude<BaseArtifactType, 'meteogram' | 'research-report' | 'model-comparison-panel' | 'brief-report' | 'radar-loop' | 'satellite-loop' | 'skewt'>,
+  artifactType: Exclude<BaseArtifactType, 'meteogram' | 'research-report' | 'brief-report' | 'radar-loop' | 'satellite-loop' | 'skewt'>,
   options: ArtifactOptions,
   forecast: Awaited<ReturnType<typeof loadMeteogramForecast>>,
 ) {
@@ -403,28 +357,6 @@ function buildPanelFallback(
   }))
 }
 
-function buildModelComparisonFallback(
-  app: FastifyInstance,
-  options: ArtifactOptions,
-) {
-  const artifactId = `model-comparison-panel-${Date.now()}.svg`
-  return writeArtifactFile(
-    app,
-    artifactId,
-    buildModelComparisonSvg(
-      options.locationQuery,
-      options.prompt,
-      options.comparisonModels ?? [],
-    ),
-  ).then(() => ({
-    artifactId,
-    type: 'model-comparison-panel',
-    title: `RainCheck Model Comparison for ${options.locationQuery}`,
-    href: artifactHref(artifactId),
-    mimeType: 'image/svg+xml',
-  }))
-}
-
 export async function generateArtifact(
   app: FastifyInstance,
   options: ArtifactOptions,
@@ -504,10 +436,6 @@ export async function generateArtifact(
       options,
       meteogramForecast,
     )
-  }
-
-  if (options.artifactType === 'model-comparison-panel') {
-    return buildModelComparisonFallback(app, options)
   }
 
   if (

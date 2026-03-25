@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import { requestClassificationSchema } from './chat'
 import {
-  getAviationSummaryToolDef,
+  getAviationContextToolDef,
   getForecastToolDef,
-  getSpcSevereProductsToolDef,
-  generateArtifactToolDef,
+  getGlobalGuidanceToolDef,
+  getSevereContextToolDef,
+  getShortRangeGuidanceToolDef,
   generateWeatherArtifactToolDef,
   weatherArtifactTypeSchema,
 } from './tools'
@@ -29,29 +30,33 @@ describe('weather contracts', () => {
     expect(
       requestClassificationSchema.parse({
         taskClass: 'research',
-        intent: 'model-comparison',
+        intent: 'weather-analysis',
         timeHorizonHours: 48,
-        locationRequired: true,
-        needsArtifact: true,
+        locationRequired: false,
+        needsArtifact: false,
       }),
     ).toMatchObject({
-      intent: 'model-comparison',
+      intent: 'weather-analysis',
     })
   })
 
-  it('exposes the renamed weather tool names without breaking aliases', () => {
+  it('exposes the streamlined weather tool names', () => {
     expect(getForecastToolDef.name).toBe('get_forecast')
-    expect(getAviationSummaryToolDef.name).toBe('get_aviation_weather')
-    expect(getSpcSevereProductsToolDef.name).toBe('get_spc_severe_products')
+    expect(getAviationContextToolDef.name).toBe('get_aviation_context')
+    expect(getSevereContextToolDef.name).toBe('get_severe_context')
+    expect(getShortRangeGuidanceToolDef.name).toBe('get_short_range_guidance')
+    expect(getGlobalGuidanceToolDef.name).toBe('get_global_guidance')
     expect(generateWeatherArtifactToolDef.name).toBe(
       'generate_weather_artifact',
     )
-    expect(generateArtifactToolDef.name).toBe('generate_weather_artifact')
     expect(weatherArtifactTypeSchema.options).toContain('radar-loop')
+    expect(weatherArtifactTypeSchema.options).not.toContain(
+      'model-comparison-panel',
+    )
   })
 
   it('defaults national-capable tools to a United States location query', () => {
-    expect(getSpcSevereProductsToolDef.inputSchema!.parse({})).toMatchObject({
+    expect(getSevereContextToolDef.inputSchema!.parse({})).toMatchObject({
       locationQuery: 'United States',
     })
   })
@@ -75,6 +80,17 @@ describe('weather contracts', () => {
         },
         confidence: 0.9,
         summary: 'Rainfall potential is elevated.',
+        normalizedForecast: {
+          domain: 'precip-flood-context',
+          headline: 'Rainfall potential is elevated.',
+          alternateScenarios: [],
+          keySignals: [],
+          conflicts: [],
+          failureModes: [],
+          whatWouldChange: [],
+          productCards: [],
+          recommendedProductIds: [],
+        },
         data: {
           qpf: 1.2,
         },
@@ -97,6 +113,17 @@ describe('weather contracts', () => {
         units: {},
         confidence: 0.5,
         summary: 'Missing validity window.',
+        normalizedForecast: {
+          domain: 'forecast',
+          headline: 'Missing validity window.',
+          alternateScenarios: [],
+          keySignals: [],
+          conflicts: [],
+          failureModes: [],
+          whatWouldChange: [],
+          productCards: [],
+          recommendedProductIds: [],
+        },
         data: {},
         citations: [],
       }).success,

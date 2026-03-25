@@ -3,16 +3,11 @@ import {
   citationSchema,
   currentConditionsSchema,
   forecastSummarySchema,
-  severeSummarySchema,
 } from '@raincheck/contracts'
 import type { FastifyInstance } from 'fastify'
 
 import { geocodeQuery } from './geocode'
-import {
-  cacheKey,
-  fetchWeatherJson,
-  fetchWeatherText,
-} from './runtime'
+import { cacheKey, fetchWeatherJson } from './runtime'
 
 type PointsResponse = {
   properties: {
@@ -115,7 +110,12 @@ export async function getCurrentConditions(
     productId: 'points',
     label: 'NWS point lookup',
     url: pointsUrl,
-    cacheKey: cacheKey('weather-gov', 'points', location.latitude, location.longitude),
+    cacheKey: cacheKey(
+      'weather-gov',
+      'points',
+      location.latitude,
+      location.longitude,
+    ),
     ttlMs: 15 * 60 * 1000,
   })
   const stations = await fetchWeatherJson<ObservationStationsResponse>(app, {
@@ -156,7 +156,9 @@ export async function getCurrentConditions(
       unit: 'F',
     },
     wind: {
-      speed: metersPerSecondToMph(latestObservation.value.properties.windSpeed.value),
+      speed: metersPerSecondToMph(
+        latestObservation.value.properties.windSpeed.value,
+      ),
       direction: windDirectionToCardinal(
         latestObservation.value.properties.windDirection.value,
       ),
@@ -185,7 +187,12 @@ export async function getForecast(
     productId: 'points',
     label: 'NWS point lookup',
     url: pointsUrl,
-    cacheKey: cacheKey('weather-gov', 'points', location.latitude, location.longitude),
+    cacheKey: cacheKey(
+      'weather-gov',
+      'points',
+      location.latitude,
+      location.longitude,
+    ),
     ttlMs: 15 * 60 * 1000,
   })
   const forecastUrl =
@@ -238,7 +245,12 @@ export async function getAlerts(app: FastifyInstance, locationQuery: string) {
     productId: 'alerts',
     label: 'NWS active alerts',
     url: alertsUrl,
-    cacheKey: cacheKey('weather-gov', 'alerts', location.latitude, location.longitude),
+    cacheKey: cacheKey(
+      'weather-gov',
+      'alerts',
+      location.latitude,
+      location.longitude,
+    ),
     ttlMs: 5 * 60 * 1000,
   })
 
@@ -257,39 +269,4 @@ export async function getAlerts(app: FastifyInstance, locationQuery: string) {
       source: makeCitation('weather-gov', 'alerts', 'NWS alerts', alertsUrl),
     }),
   )
-}
-
-export async function getSevereSummary(
-  app: FastifyInstance,
-  locationQuery: string,
-) {
-  const alerts = await getAlerts(app, locationQuery)
-  const outlookUrl = 'https://www.spc.noaa.gov/products/outlook/'
-  const outlookText = await fetchWeatherText(app, {
-    sourceId: 'spc',
-    productId: 'outlook',
-    label: 'SPC outlooks',
-    url: outlookUrl,
-    cacheKey: cacheKey('spc', 'outlook'),
-    ttlMs: 10 * 60 * 1000,
-  }).catch(() => ({ value: '' } as { value: string }))
-
-  return severeSummarySchema.parse({
-    area: locationQuery,
-    summary:
-      alerts.length > 0
-        ? `Active alerts are present. ${alerts[0]?.headline ?? ''}`.trim()
-        : 'No active local alerts were found. SPC outlook context is available for broader severe-weather discussion.',
-    outlookCategory: outlookText.value.includes('Moderate')
-      ? 'Moderate'
-      : outlookText.value.includes('Slight')
-        ? 'Slight'
-        : null,
-    watchContext:
-      alerts.find((alert) => /watch/i.test(alert.headline))?.headline ?? null,
-    citations: [
-      makeCitation('spc', 'outlook', 'SPC outlooks', outlookUrl),
-      ...alerts.map((alert) => alert.source),
-    ],
-  })
 }

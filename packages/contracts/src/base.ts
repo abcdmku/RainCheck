@@ -27,7 +27,6 @@ export const weatherWorkflowSchema = z.enum([
   'short-range-model',
   'blend-analysis',
   'global-model',
-  'model-comparison',
   'tropical',
   'marine',
   'upper-air',
@@ -45,7 +44,6 @@ export const artifactKindSchema = z.enum([
   'chart',
   'radar-loop',
   'satellite-loop',
-  'model-comparison',
   'summary',
 ])
 

@@ -15,15 +15,28 @@ describe('classifyRequest', () => {
     })
   })
 
-  it('routes model comparison prompts directly into model comparison', () => {
+  it('routes multi-model comparison prompts into the global guidance workflow', () => {
     const classification = classifyRequest(
       'Compare the GFS and ECMWF for Austin tomorrow morning',
     )
 
     expect(classification).toMatchObject({
       taskClass: 'research',
-      intent: 'model-comparison',
-      needsArtifact: true,
+      intent: 'global-model',
+      needsArtifact: false,
+    })
+    expect(classification.timeHorizonHours).toBe(48)
+  })
+
+  it('routes generic overnight model prompts into short-range guidance synthesis', () => {
+    const classification = classifyRequest(
+      'What do the models say about tonight in Oklahoma City?',
+    )
+
+    expect(classification).toMatchObject({
+      taskClass: 'research',
+      intent: 'short-range-model',
+      needsArtifact: false,
     })
     expect(classification.timeHorizonHours).toBe(48)
   })
@@ -36,7 +49,7 @@ describe('classifyRequest', () => {
     expect(classification).toMatchObject({
       taskClass: 'research',
       intent: 'hydrology',
-      needsArtifact: true,
+      needsArtifact: false,
     })
     expect(classification.timeHorizonHours).toBe(240)
   })

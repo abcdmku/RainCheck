@@ -16,14 +16,46 @@ type OpenableArtifact = {
 }
 
 const previewTitleByTool: Record<string, string> = {
-  compare_models: 'Model Comparison',
-  get_blend_and_analysis_guidance: 'Blend And Analysis Guidance',
-  get_global_model_guidance: 'Global Model Guidance',
-  get_goes_satellite: 'Satellite',
-  get_hydrology_nwps: 'Hydrology',
-  get_nexrad_radar: 'Radar',
-  get_spc_severe_products: 'Severe Outlook',
-  get_wpc_qpf_ero: 'Rainfall Outlook',
+  get_aviation_context: 'Aviation Context',
+  get_fire_weather_products: 'Fire Weather',
+  get_global_guidance: 'Global Guidance',
+  get_precip_flood_context: 'Precipitation And Flood Context',
+  get_radar_satellite_nowcast: 'Radar, Satellite, And Nowcast',
+  get_severe_context: 'Severe Context',
+  get_short_range_guidance: 'Short Range Guidance',
+  get_wpc_medium_range_hazards: 'Medium Range Hazards',
+  get_wpc_winter_weather: 'Winter Weather',
+}
+
+const hiddenToolOutputNames = new Set([
+  'resolve_location',
+  'get_current_conditions',
+  'get_forecast',
+  'get_alerts',
+  'get_short_range_guidance',
+  'get_global_guidance',
+  'get_severe_context',
+  'get_precip_flood_context',
+  'get_radar_satellite_nowcast',
+  'get_aviation_context',
+  'get_fire_weather_products',
+  'get_wpc_winter_weather',
+  'get_wpc_medium_range_hazards',
+  'get_tropical_weather',
+  'get_marine_ocean_guidance',
+  'get_upper_air_soundings',
+  'get_historical_climate',
+  'get_storm_history',
+  'request_geolocation_permission',
+  'generate_citation_bundle',
+  'copy_to_clipboard',
+  'save_ui_preference',
+  'open_artifact_view',
+  'synthesize_weather_conclusion',
+])
+
+function shouldHideToolOutput(name: string | undefined) {
+  return Boolean(name && hiddenToolOutputNames.has(name))
 }
 
 function titleCase(value: string) {
@@ -68,12 +100,11 @@ function isArtifactOutput(output: unknown): output is Record<string, any> {
   )
 }
 
-function isLocationOutput(output: unknown): output is Record<string, any> {
+function isWeatherConclusion(output: unknown): output is Record<string, any> {
   return (
     isRecord(output) &&
-    typeof output.name === 'string' &&
-    typeof output.latitude === 'number' &&
-    typeof output.longitude === 'number'
+    typeof output.bottomLine === 'string' &&
+    typeof output.confidence !== 'undefined'
   )
 }
 
@@ -83,44 +114,6 @@ function isReportOutline(output: unknown): output is Record<string, any> {
     typeof output.title === 'string' &&
     Array.isArray(output.sections)
   )
-}
-
-function isModelComparison(output: unknown): output is Record<string, any> {
-  return (
-    isRecord(output) &&
-    typeof output.consensus === 'string' &&
-    Array.isArray(output.comparedModels)
-  )
-}
-
-function formatDateLabel(value: string) {
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.valueOf())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    month: 'short',
-  }).format(parsed)
-}
-
-function formatValidLabel(output: Record<string, any>) {
-  if (
-    isRecord(output.validRange) &&
-    typeof output.validRange.start === 'string' &&
-    typeof output.validRange.end === 'string'
-  ) {
-    return `${formatDateLabel(output.validRange.start)} - ${formatDateLabel(output.validRange.end)}`
-  }
-
-  if (typeof output.validAt === 'string') {
-    return formatDateLabel(output.validAt)
-  }
-
-  return undefined
 }
 
 function inferMimeTypeFromUrl(url: string) {
@@ -141,21 +134,20 @@ function inferMimeTypeFromUrl(url: string) {
   return 'image/jpeg'
 }
 
-function summarizeLine(value: string, maxChars = 120) {
-  const normalized = value.replace(/\s+/g, ' ').trim()
-  if (normalized.length <= maxChars) {
-    return normalized
-  }
+function collectProducts(
+  output: Record<string, any>,
+): Array<Record<string, any>> {
+  const products = Array.isArray(output.data?.products)
+    ? output.data.products
+    : Array.isArray(output.productCards)
+      ? output.productCards
+      : Array.isArray(output.recommendedArtifacts)
+        ? output.recommendedArtifacts
+        : []
 
-  return `${normalized.slice(0, maxChars).trimEnd()}...`
-}
-
-function collectProducts(output: Record<string, any>) {
-  return Array.isArray(output.data?.products)
-    ? output.data.products.filter(
-        (product: unknown): product is Record<string, any> => isRecord(product),
-      )
-    : []
+  return products.filter(
+    (product: unknown): product is Record<string, any> => isRecord(product),
+  )
 }
 
 function findHighlightedProduct(output: Record<string, any>) {
@@ -188,44 +180,12 @@ function getPreviewTitle(partName: string, output: Record<string, any>) {
   return previewTitleByTool[partName] ?? titleCase(formatToolLabel(partName))
 }
 
-function getPreviewSummary(partName: string, output: Record<string, any>) {
-  const title = getPreviewTitle(partName, output)
-  const summary =
-    typeof output.summary === 'string'
-      ? output.summary
-      : typeof output.consensus === 'string'
-        ? output.consensus
-        : ''
-
-  if (summary.startsWith(`${title}: `)) {
-    return summarizeLine(summary.slice(title.length + 2))
-  }
-
-  return summarizeLine(summary)
-}
-
 function getPreviewSource(partName: string, output: Record<string, any>) {
   if (typeof output.sourceName === 'string') {
     return output.sourceName
   }
 
-  if (Array.isArray(output.comparedModels)) {
-    return `${output.comparedModels.length} models`
-  }
-
   return previewTitleByTool[partName] ?? titleCase(formatToolLabel(partName))
-}
-
-function getPreviewLocation(output: Record<string, any>) {
-  if (typeof output.location?.name === 'string') {
-    return output.location.name
-  }
-
-  if (typeof output.locationName === 'string') {
-    return output.locationName
-  }
-
-  return undefined
 }
 
 function findArtifactHandle(output: Record<string, any>, artifactId: string) {
@@ -310,6 +270,20 @@ function getPreviewImageUrl(
     : undefined
 }
 
+function getPreviewSourceUrl(output: Record<string, any>) {
+  const highlightedProduct = findHighlightedProduct(output)
+  if (typeof highlightedProduct?.url === 'string') {
+    return highlightedProduct.url
+  }
+
+  const firstCitation = Array.isArray(output.citations)
+    ? output.citations.find(
+        (c: unknown) => isRecord(c) && typeof c.url === 'string',
+      )
+    : null
+  return firstCitation?.url ?? undefined
+}
+
 function hasPreviewCard(output: Record<string, any>) {
   const title = getPreviewTitle('preview', output)
   const artifact = resolvePreviewArtifact(output, title)
@@ -384,22 +358,20 @@ function ProductPreviewCard({
   const title = getPreviewTitle(partName, output)
   const resolvedArtifact = resolvePreviewArtifact(output, title)
   const imageUrl = getPreviewImageUrl(output, resolvedArtifact)
-  const validLabel = formatValidLabel(output)
   const sourceLabel = getPreviewSource(partName, output)
-  const locationLabel = getPreviewLocation(output)
-  const summary = getPreviewSummary(partName, output)
   const severity = formatToolValue(output.severity)
 
   if (!resolvedArtifact || !imageUrl) {
     return (
       <ToolSummaryCard
         citations={output.citations}
-        subtitle={locationLabel}
-        summary={summary || `Used ${title} to gather weather product context.`}
+        summary={`Used ${title} to gather weather product context.`}
         title={title}
       />
     )
   }
+
+  const sourceUrl = getPreviewSourceUrl(output)
 
   return (
     <button
@@ -421,15 +393,18 @@ function ProductPreviewCard({
           ) : null}
         </div>
       </div>
-      <div className="product-card-body">
-        <div className="product-card-header">
-          <p>{title}</p>
-          {validLabel ? <span>{validLabel}</span> : null}
-        </div>
-        {locationLabel ? (
-          <p className="product-card-location">{locationLabel}</p>
+      <div className="product-card-footer">
+        <p>{title}</p>
+        {sourceUrl ? (
+          <a
+            href={sourceUrl}
+            onClick={(e) => e.stopPropagation()}
+            rel="noreferrer"
+            target="_blank"
+          >
+            View source
+          </a>
         ) : null}
-        <p className="product-card-summary">{summary}</p>
       </div>
     </button>
   )
@@ -669,42 +644,6 @@ function ReportOutlineCard({ output }: { output: Record<string, any> }) {
   )
 }
 
-function ModelComparisonCard({ output }: { output: Record<string, any> }) {
-  return (
-    <div className="tool-card">
-      <div className="tool-card-header">
-        <p>Model comparison</p>
-        <span>{output.locationName}</span>
-      </div>
-      <p className="tool-summary">{output.consensus}</p>
-      <div className="forecast-stack">
-        {output.comparedModels.slice(0, 4).map((model: any) => (
-          <div
-            className="forecast-row"
-            key={`${model.sourceId}-${model.modelLabel}`}
-          >
-            <div>
-              <strong>{model.modelLabel}</strong>
-              <span>{model.summary}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-      <p className="tool-summary is-secondary">{output.uncertainty}</p>
-    </div>
-  )
-}
-
-function LocationCard({ output }: { output: Record<string, any> }) {
-  return (
-    <ToolSummaryCard
-      subtitle={`${output.latitude.toFixed(2)}, ${output.longitude.toFixed(2)}`}
-      summary={`Resolved to ${output.name}.`}
-      title="Location"
-    />
-  )
-}
-
 function ErrorCard({
   partName,
   output,
@@ -730,6 +669,10 @@ function ToolOutput({
   part: any
   onOpenArtifact: (artifact: OpenableArtifact) => void
 }) {
+  if (shouldHideToolOutput(part.name)) {
+    return null
+  }
+
   if (!part.output || !isRecord(part.output)) {
     const textOutput = formatToolValue(part.output)
     return textOutput ? (
@@ -750,6 +693,10 @@ function ToolOutput({
 
   if (part.name === 'generate_citation_bundle') {
     return <SourcesCard output={part.output} />
+  }
+
+  if (part.name === 'synthesize_weather_conclusion') {
+    return null
   }
 
   if (isWeatherEnvelope(part.output)) {
@@ -775,22 +722,6 @@ function ToolOutput({
 
   if (isReportOutline(part.output)) {
     return <ReportOutlineCard output={part.output} />
-  }
-
-  if (isModelComparison(part.output)) {
-    return hasPreviewCard(part.output) ? (
-      <ProductPreviewCard
-        onOpenArtifact={onOpenArtifact}
-        output={part.output}
-        partName={part.name}
-      />
-    ) : (
-      <ModelComparisonCard output={part.output} />
-    )
-  }
-
-  if (isLocationOutput(part.output)) {
-    return <LocationCard output={part.output} />
   }
 
   return (
@@ -875,6 +806,7 @@ export function MessageView({
   message,
   isLastAssistant,
   isStreaming,
+  suppressThinkingIndicator,
   onCopy,
   onEditAndResend,
   onRetry,
@@ -883,6 +815,7 @@ export function MessageView({
   message: UIMessage
   isLastAssistant: boolean
   isStreaming?: boolean
+  suppressThinkingIndicator?: boolean
   onCopy: (text: string) => void
   onEditAndResend: (messageId: string, newText: string) => void
   onRetry: () => void
@@ -890,8 +823,13 @@ export function MessageView({
 }) {
   const [editing, setEditing] = useState(false)
   const text = getMessageText(message as any)
+  const visibleParts = message.parts.filter((part: any) =>
+    part.type === 'tool-call'
+      ? !shouldHideToolOutput(part.name) && !isWeatherConclusion(part.output)
+      : true,
+  )
 
-  const hasTools = message.parts.some((part: any) => part.type === 'tool-call')
+  const hasTools = visibleParts.some((part: any) => part.type === 'tool-call')
 
   // For assistant messages: render parts in order (tools first if they come first,
   // text after). We respect the original part order from the stream.
@@ -899,7 +837,12 @@ export function MessageView({
   const isUser = message.role === 'user'
 
   // Detect "thinking" state: assistant message that is streaming with no text yet
-  const isThinking = isAssistant && isStreaming && !text && !hasTools
+  const isThinking =
+    isAssistant &&
+    isStreaming &&
+    !text &&
+    !hasTools &&
+    !suppressThinkingIndicator
 
   const actionsRow = !editing ? (
     <div className="message-actions">
@@ -961,11 +904,14 @@ export function MessageView({
 
               {isAssistant ? (
                 /* Assistant: render parts in stream order */
-                message.parts.map((part: any) => {
+                visibleParts.map((part: any) => {
                   if (part.type === 'text') {
                     const partText = part.content ?? part.text ?? ''
                     return partText ? (
-                      <div className="message-markdown" key={part.id ?? `text-${partText.slice(0, 20)}`}>
+                      <div
+                        className="message-markdown"
+                        key={part.id ?? `text-${partText.slice(0, 20)}`}
+                      >
                         <Streamdown>{partText}</Streamdown>
                       </div>
                     ) : null
@@ -981,14 +927,12 @@ export function MessageView({
                   }
                   return null
                 })
-              ) : (
-                /* User: just text */
-                text ? (
-                  <div className="message-markdown">
-                    <Streamdown>{text}</Streamdown>
-                  </div>
-                ) : null
-              )}
+              ) : /* User: just text */
+              text ? (
+                <div className="message-markdown">
+                  <Streamdown>{text}</Streamdown>
+                </div>
+              ) : null}
             </>
           )}
         </div>

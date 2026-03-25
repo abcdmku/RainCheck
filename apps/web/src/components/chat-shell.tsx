@@ -42,9 +42,41 @@ type PendingDraft = RouteSelection & {
   locationOverride?: ChatLocationOverride | null
 }
 
+type LiveStatus = {
+  id: number
+  label: string
+}
+
 const defaultRouteSelection: RouteSelection = {
   provider: 'openai',
   model: 'gpt-4.1-mini',
+}
+
+const progressLabelMap: Record<string, string> = {
+  'Resolving location': 'Pinning down the area',
+  'Fetching current conditions': 'Checking current observations',
+  'Fetching forecast': 'Checking the official forecast',
+  'Fetching alerts': 'Checking active alerts',
+  'Fetching severe context': 'Checking SPC severe setup',
+  'Fetching short-range guidance': 'Comparing short-range guidance',
+  'Fetching radar, satellite, and nowcast context':
+    'Checking radar, satellite, and nowcast',
+  'Fetching precipitation and flood context': 'Checking flood guidance',
+  'Fetching global guidance': 'Comparing global guidance',
+  'Fetching aviation context': 'Checking aviation weather',
+  'Fetching fire-weather outlooks': 'Checking fire-weather guidance',
+  'Fetching winter weather guidance': 'Checking winter guidance',
+  'Fetching medium-range hazards': 'Checking medium-range hazards',
+  'Fetching tropical outlooks': 'Checking tropical guidance',
+  'Fetching marine guidance': 'Checking marine guidance',
+  'Fetching upper-air soundings': 'Checking upper-air data',
+  'Fetching historical climate data': 'Checking climate history',
+  'Fetching storm history': 'Checking storm history',
+  'Synthesizing weather conclusion': 'Writing the answer',
+}
+
+function formatProgressLabel(label: string) {
+  return progressLabelMap[label] ?? label
 }
 
 export function ChatShell({ conversationId }: ChatShellProps) {
@@ -58,7 +90,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     defaultRouteSelection,
   )
   const [pendingDraft, setPendingDraft] = useState<PendingDraft | null>(null)
-  const [progressLabels, setProgressLabels] = useState<Array<string>>([])
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null)
   const [selectedArtifact, setSelectedArtifact] = useState<{
     href: string
     title: string
@@ -75,6 +107,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
   const hydratedRouteConversationIdRef = useRef<string | null>(null)
   const syncedConversationSnapshotRef = useRef<string | null>(null)
   const messageEndRef = useRef<HTMLDivElement | null>(null)
+  const liveStatusIdRef = useRef(0)
 
   const conversationsQuery = useQuery({
     queryKey: ['conversations'],
@@ -102,6 +135,16 @@ export function ChatShell({ conversationId }: ChatShellProps) {
 
   const deleteConversationMutation = useMutation({
     mutationFn: (id: string) => apiClient.deleteConversation(id),
+  })
+
+  const updateConversationMutation = useMutation({
+    mutationFn: (vars: {
+      id: string
+      updates: { title?: string; pinned?: boolean }
+    }) => apiClient.updateConversation(vars.id, vars.updates),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['conversations'] })
+    },
   })
 
   const initialMessages = useMemo<Array<UIMessage>>(
@@ -162,20 +205,6 @@ export function ChatShell({ conversationId }: ChatShellProps) {
       : null
   }, [locationPreference, settingsQuery.data?.defaultLocationLabel])
 
-  const canAutoDetectLocation = useMemo(
-    () =>
-      !effectiveLocationOverride &&
-      locationPreference == null &&
-      settingsQuery.isFetched &&
-      !settingsQuery.data?.defaultLocationLabel,
-    [
-      effectiveLocationOverride,
-      locationPreference,
-      settingsQuery.isFetched,
-      settingsQuery.data?.defaultLocationLabel,
-    ],
-  )
-
   const handleLocationChange = useCallback(
     (next: ChatLocationOverride | null) => {
       if (!next) {
@@ -205,17 +234,24 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     locationOverride: effectiveLocationOverride ?? undefined,
     onCustomEvent: (eventType: string, data: unknown) => {
       if (eventType === 'tool-progress') {
-        setProgressLabels((current) => [
-          ...current,
+        const label = formatProgressLabel(
           String((data as any)?.label ?? 'Working'),
-        ])
+        )
+        setLiveStatus((current) =>
+          current?.label === label
+            ? current
+            : {
+                id: ++liveStatusIdRef.current,
+                label,
+              },
+        )
       }
     },
     onError: () => {
-      setProgressLabels([])
+      setLiveStatus(null)
     },
     onFinish: async () => {
-      setProgressLabels([])
+      setLiveStatus(null)
       setComposerValue('')
 
       await queryClient.invalidateQueries({ queryKey: ['conversations'] })
@@ -422,11 +458,15 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     selectedRoute.provider,
   ])
 
-  useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  })
-
   const messages = conversationId ? chat.messages : []
+  const showPendingAssistantRow =
+    chat.isLoading && messages[messages.length - 1]?.role !== 'assistant'
+
+  useEffect(() => {
+    messageEndRef.current?.scrollIntoView({
+      behavior: chat.isLoading ? 'auto' : 'smooth',
+    })
+  }, [chat.isLoading, messages])
 
   async function resolveMessageLocationOverride() {
     if (effectiveLocationOverride) {
@@ -491,7 +531,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
         hydratedRouteConversationIdRef.current = null
         syncedConversationSnapshotRef.current = null
         draftSentRef.current = false
-        setProgressLabels([])
+        setLiveStatus(null)
         setSelectedArtifact(null)
         navigate({ to: '/' })
       }
@@ -508,6 +548,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
 
     // Instantly clear input (optimistic)
     setComposerValue('')
+    setLiveStatus(null)
 
     if (!conversationId) {
       await createAndNavigateWithDraft(trimmed)
@@ -571,6 +612,18 @@ export function ChatShell({ conversationId }: ChatShellProps) {
           onDeleteConversation={(conversation) =>
             void handleDeleteConversation(conversation)
           }
+          onRenameConversation={(conversation, title) =>
+            void updateConversationMutation.mutateAsync({
+              id: conversation.id,
+              updates: { title },
+            })
+          }
+          onTogglePin={(conversation) =>
+            void updateConversationMutation.mutateAsync({
+              id: conversation.id,
+              updates: { pinned: !conversation.pinned },
+            })
+          }
           onOpenSettings={() => setSettingsOpen(true)}
           onToggle={() => setSidebarCollapsed((current) => !current)}
           deletingConversationId={
@@ -602,6 +655,12 @@ export function ChatShell({ conversationId }: ChatShellProps) {
                   }
                   key={message.id}
                   message={message}
+                  suppressThinkingIndicator={Boolean(
+                    liveStatus &&
+                      chat.isLoading &&
+                      message.role === 'assistant' &&
+                      index === messages.length - 1,
+                  )}
                   onCopy={(text) => navigator.clipboard.writeText(text)}
                   onEditAndResend={(messageId, newText) =>
                     void handleEditAndResend(messageId, newText)
@@ -611,20 +670,46 @@ export function ChatShell({ conversationId }: ChatShellProps) {
                 />
               ))
             )}
-            {progressLabels.length > 0 ? (
-              <div className="progress-rail">
-                {progressLabels.slice(-3).map((label) => (
-                  <span className="progress-pill" key={label}>
-                    {label}
-                  </span>
-                ))}
+            {showPendingAssistantRow || liveStatus ? (
+              <div className="message-row">
+                <div className="message-wrap">
+                  <div className="message-bubble">
+                    <div
+                      aria-live="polite"
+                      className="assistant-status"
+                      key={liveStatus?.id ?? 'pending'}
+                      role="status"
+                    >
+                      <div className="thinking-indicator">
+                        <span className="thinking-dot" />
+                        <span className="thinking-dot" />
+                        <span className="thinking-dot" />
+                      </div>
+                      {liveStatus ? (
+                        <span className="assistant-status-label">
+                          {liveStatus.label}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : null}
             {chat.error ? (
-              <div className="progress-rail">
-                <span className="progress-pill">
-                  Request failed. Try again.
-                </span>
+              <div className="message-row">
+                <div className="message-wrap">
+                  <div className="message-bubble">
+                    <div
+                      aria-live="polite"
+                      className="assistant-status is-error"
+                      role="status"
+                    >
+                      <span className="assistant-status-label">
+                        Request failed. Try again.
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : null}
             <div ref={messageEndRef} />
@@ -632,7 +717,6 @@ export function ChatShell({ conversationId }: ChatShellProps) {
 
           <Composer
             isLoading={chat.isLoading}
-            canAutoDetectLocation={canAutoDetectLocation}
             locationLabel={effectiveLocationOverride?.label ?? null}
             messageHistory={userMessageHistory}
             modelOptions={availableModelOptions}

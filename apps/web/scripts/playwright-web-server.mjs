@@ -37,9 +37,26 @@ function seedConversation(id, title) {
   }
 }
 
+function makeSvgDataUri(label, sublabel) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+    <defs>
+      <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+        <stop offset="0%" stop-color="#13242a" />
+        <stop offset="100%" stop-color="#0a1216" />
+      </linearGradient>
+    </defs>
+    <rect width="640" height="360" rx="28" fill="url(#bg)" />
+    <circle cx="528" cy="92" r="78" fill="#79ddd0" opacity="0.18" />
+    <circle cx="118" cy="268" r="88" fill="#ffd47a" opacity="0.12" />
+    <text x="34" y="54" fill="#eef5f5" font-family="sans-serif" font-size="28" font-weight="700">${label}</text>
+    <text x="34" y="86" fill="#9cb0b4" font-family="sans-serif" font-size="15">${sublabel}</text>
+  </svg>`
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+}
+
 const conversations = new Map([
   ['thread-weather', seedConversation('thread-weather', 'Austin weather')],
-  ['thread-research', seedConversation('thread-research', 'Austin research')],
+  ['thread-research', seedConversation('thread-research', 'Austin severe setup')],
 ])
 
 let nextConversationId = 1
@@ -166,9 +183,9 @@ function upsertCurrentWeatherReply(entry, conversationId, prompt) {
   })
 }
 
-function upsertResearchReply(entry, conversationId, prompt) {
+function upsertConclusionReply(entry, conversationId, prompt) {
   const timestamp = now()
-  entry.conversation.latestPreview = 'Research brief ready for Austin, TX.'
+  entry.conversation.latestPreview = 'Bottom line: Austin has a conditional severe setup.'
   entry.conversation.updatedAt = timestamp
   entry.messages.push({
     id: `msg-user-${entry.messages.length + 1}`,
@@ -186,39 +203,63 @@ function upsertResearchReply(entry, conversationId, prompt) {
     id: `msg-assistant-${entry.messages.length + 1}`,
     conversationId,
     role: 'assistant',
-    content: 'Research brief ready for Austin, TX.',
+    content:
+      'Bottom line: Austin has a conditional severe setup this evening. Confidence: medium.',
     parts: [
       {
         type: 'text',
-        content: 'Research brief ready for Austin, TX.',
+        content:
+          'Bottom line: Austin has a conditional severe setup this evening. Confidence: medium.',
       },
       {
         type: 'tool-call',
         id: 'tool-artifact-1',
-        name: 'generate_artifact',
+        name: 'synthesize_weather_conclusion',
         arguments: '{}',
         state: 'input-complete',
         output: {
-          artifactId: 'research-report.html',
-          title: 'Research report for Austin, TX',
-          href: '/api/artifacts/research-report.html',
-          mimeType: 'text/html',
+          bottomLine: 'A narrow boundary near Austin is the best severe-weather focus.',
+          confidence: 'medium',
+          confidenceReason:
+            'Confidence is medium because the boundary is present but timing still wobbles.',
+          mostLikelyScenario:
+            'Isolated storms form near the boundary and remain the best target for a short window.',
+          alternateScenarios: [
+            'Storms stay elevated and remain messy with a lower-end threat.',
+            'The boundary shifts south and the best focus moves away from Austin.',
+          ],
+          keySignals: [
+            'SPC and short-range guidance both support a conditional evening target.',
+            'Current imagery suggests the boundary is still in play.',
+          ],
+          conflicts: ['Model timing remains a little faster than the observed trend.'],
+          whatWouldChangeTheForecast:
+            'Earlier cloud clearing and stronger boundary recovery would increase confidence.',
+          recommendedArtifacts: [
+            {
+              title: 'SPC severe context',
+              summary: 'Official severe-weather context for the setup.',
+              href: '/api/artifacts/spc-context.html',
+              mimeType: 'image/svg+xml',
+              imageUrl: makeSvgDataUri('SPC', 'Severe context'),
+              imageAlt: 'SPC severe context preview',
+              sourceLabel: 'SPC',
+            },
+            {
+              title: 'Radar and nowcast',
+              summary: 'The most relevant single-product nowcast view for the target area.',
+              href: '/api/artifacts/radar-nowcast.html',
+              mimeType: 'image/svg+xml',
+              imageUrl: makeSvgDataUri('Radar', 'Nowcast'),
+              imageAlt: 'Radar and nowcast preview',
+              sourceLabel: 'Nowcast',
+            },
+          ],
         },
       },
     ],
     citations: [],
-    artifacts: [
-      {
-        id: 'research-report.html',
-        type: 'report',
-        title: 'Research report for Austin, TX',
-        description: 'Research report',
-        mimeType: 'text/html',
-        href: '/api/artifacts/research-report.html',
-        createdAt: timestamp,
-        sourceIds: ['weather-gov'],
-      },
-    ],
+    artifacts: [],
     createdAt: timestamp,
     provider: 'openai',
     model: 'gpt-4.1-mini',
@@ -326,9 +367,12 @@ const apiServer = createServer(async (request, response) => {
       latestUserMessage?.content ??
       'Tell me about the weather.'
 
-    if (/compare|research|brief|radar/i.test(prompt)) {
-      upsertResearchReply(entry, conversationId, prompt)
-      writeSse(response, 'Research brief ready for Austin, TX.')
+    if (/compare|research|brief|radar|target|severe|tornado|storm/i.test(prompt)) {
+      upsertConclusionReply(entry, conversationId, prompt)
+      writeSse(
+        response,
+        'Bottom line: Austin has a conditional severe setup this evening. Confidence: medium.',
+      )
       return
     }
 

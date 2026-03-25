@@ -24,9 +24,7 @@ describe('buildSystemPrompt', () => {
 
     expect(prompt).toContain('Default location context: Austin, TX.')
     expect(prompt).toContain('use this exact location as the locationQuery')
-    expect(prompt).toContain(
-      'Never pass the entire user request into resolve_location.',
-    )
+    expect(prompt).toContain('Weather tools resolve location internally.')
   })
 
   it('prefers stored coordinates when they are already available', () => {
@@ -40,7 +38,7 @@ describe('buildSystemPrompt', () => {
       'Default weather tool locationQuery: 41.6400, -88.4500.',
     )
     expect(prompt).toContain(
-      'Do not call request_geolocation_permission or resolve_location when the default location context already provides coordinates.',
+      'Do not call request_geolocation_permission when the default location context already provides coordinates.',
     )
   })
 
@@ -52,7 +50,7 @@ describe('buildSystemPrompt', () => {
       'ask the user for a city, address, or coordinates before fetching weather',
     )
     expect(prompt).toContain(
-      'Never pass the entire user request into resolve_location.',
+      'Only pass the place text or coordinates into locationQuery',
     )
   })
 
@@ -67,5 +65,23 @@ describe('buildSystemPrompt', () => {
 
     expect(prompt).not.toContain('request_geolocation_permission')
     expect(prompt).toContain('Current workflow: weather-analysis.')
+  })
+
+  it('treats region names as explicit location context and avoids city substitution', () => {
+    const prompt = buildSystemPrompt(
+      classification({
+        intent: 'severe-weather',
+      }),
+    )
+
+    expect(prompt).toContain(
+      'If the user already named a place or region, including broad regional phrases like central Illinois or northern Indiana, treat that as explicit location context and do not request device geolocation.',
+    )
+    expect(prompt).toContain(
+      'Do not silently replace it with a representative city',
+    )
+    expect(prompt).toContain(
+      'Before the final answer for this workflow, call synthesize_weather_conclusion',
+    )
   })
 })

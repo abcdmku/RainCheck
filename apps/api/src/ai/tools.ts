@@ -1,61 +1,49 @@
 import {
-  compareModelsToolDef,
-  generateCitationBundleToolDef,
-  generateReportOutlineToolDef,
-  generateWeatherArtifactToolDef,
   getAlertsToolDef,
-  getAviationWeatherToolDef,
-  getBlendAndAnalysisGuidanceToolDef,
+  getAviationContextToolDef,
   getCurrentConditionsToolDef,
   getFireWeatherProductsToolDef,
   getForecastToolDef,
-  getGlobalModelGuidanceToolDef,
-  getGoesSatelliteToolDef,
+  getGlobalGuidanceToolDef,
   getHistoricalClimateToolDef,
-  getHydrologyNwpsToolDef,
   getMarineOceanGuidanceToolDef,
-  getMrmsProductsToolDef,
-  getNexradRadarToolDef,
-  getShortRangeModelGuidanceToolDef,
-  getSpcSevereProductsToolDef,
+  getPrecipFloodContextToolDef,
+  getRadarSatelliteNowcastToolDef,
+  resolveLocationToolDef,
+  getSevereContextToolDef,
+  getShortRangeGuidanceToolDef,
   getStormHistoryToolDef,
+  synthesizeWeatherConclusionToolDef,
   getTropicalWeatherToolDef,
   getUpperAirSoundingsToolDef,
   getWpcMediumRangeHazardsToolDef,
-  getWpcQpfEroToolDef,
   getWpcWinterWeatherToolDef,
-  resolveLocationToolDef,
   type RequestClassification,
 } from '@raincheck/contracts'
 import type { ServerTool } from '@tanstack/ai'
 import type { FastifyInstance } from 'fastify'
 
 import { geocodeQuery } from '../weather/geocode'
-import { getAviationSummary } from '../weather/aviation'
-import { getHistoricalClimate, getStormHistory } from '../weather/climate'
 import { getFireWeatherProducts } from '../weather/fire-weather'
-import { getHydrologyNwps } from '../weather/hydrology'
-import { getMarineOceanGuidance } from '../weather/marine'
 import {
-  compareModels,
-  getBlendAndAnalysisGuidance,
-  getGlobalModelGuidance,
-  getShortRangeModelGuidance,
-} from '../weather/models'
-import { getMrmsProducts } from '../weather/mrms'
+  getAviationContext,
+  getPrecipFloodContext,
+  getRadarSatelliteNowcast,
+  getSevereContext,
+} from '../weather/domain-tools'
+import { getHistoricalClimate, getStormHistory } from '../weather/climate'
+import { getMarineOceanGuidance } from '../weather/marine'
+import { getGlobalGuidance, getShortRangeGuidance } from '../weather/models'
 import { getAlerts, getCurrentConditions, getForecast } from '../weather/nws'
-import { previewFromArtifact } from '../weather/previews'
-import { getNexradRadar } from '../weather/radar'
-import { getGoesSatellite } from '../weather/satellite'
-import { generateArtifact } from '../weather/service-client'
-import { chooseSourceManifests } from '../weather/source-selection'
-import { getSpcSevereProducts } from '../weather/spc'
+import { synthesizeWeatherConclusion } from '../weather/synthesis'
 import { getTropicalWeather } from '../weather/tropical'
 import { getUpperAirSoundings } from '../weather/upper-air'
-import { buildWeatherEnvelope } from '../weather/runtime'
+import {
+  buildWeatherEnvelope,
+  type WeatherSignal,
+} from '../weather/runtime'
 import {
   getWpcMediumRangeHazards,
-  getWpcQpfEro,
   getWpcWinterWeather,
 } from '../weather/wpc'
 
@@ -80,6 +68,25 @@ function nowIso() {
   return new Date().toISOString()
 }
 
+function confidenceLevel(value: number): 'low' | 'medium' | 'high' {
+  if (value >= 0.8) {
+    return 'high'
+  }
+
+  if (value >= 0.6) {
+    return 'medium'
+  }
+
+  return 'low'
+}
+
+function buildToolSet(
+  coreTools: Array<ServerTool<any, any>>,
+  extraTools: Array<ServerTool<any, any>>,
+) {
+  return [...new Set([...coreTools, ...extraTools])]
+}
+
 function wrapCurrentConditions(
   result: Awaited<ReturnType<typeof getCurrentConditions>>,
 ) {
@@ -88,6 +95,8 @@ function wrapCurrentConditions(
     result.wind.speed != null
       ? `Wind ${result.wind.speed} mph${result.wind.direction ? ` ${result.wind.direction}` : ''}.`
       : 'Wind data unavailable.'
+  const confidence = 0.94
+  const summary = `${result.textDescription} around ${temp}. ${wind}`.trim()
 
   return buildWeatherEnvelope({
     source: {
@@ -103,8 +112,31 @@ function wrapCurrentConditions(
       humidityPercent: '%',
     },
     validAt: result.observedAt,
-    confidence: 0.94,
-    summary: `${result.textDescription} around ${temp}. ${wind}`.trim(),
+    confidence,
+    summary,
+    normalizedForecast: {
+      domain: 'current-conditions',
+      headline: `Current observations show ${summary}`,
+      mostLikelyScenario: summary,
+      alternateScenarios: [],
+      likelihood: confidenceLevel(confidence),
+      confidence: confidenceLevel(confidence),
+      keySignals: [
+        {
+          category: 'observation',
+          weight: 'high',
+          label: 'Latest observation',
+          detail: summary,
+          sourceIds: [result.source.sourceId],
+          productIds: [result.source.productId],
+        } satisfies WeatherSignal,
+      ],
+      conflicts: [],
+      failureModes: [],
+      whatWouldChange: [],
+      productCards: [],
+      recommendedProductIds: [],
+    },
     data: {
       current: result,
     },
@@ -118,6 +150,7 @@ function wrapForecast(result: Awaited<ReturnType<typeof getForecast>>) {
   const summary = first
     ? `${first.name}: ${first.shortForecast}, near ${first.temperature}${first.temperatureUnit}.`
     : `Forecast context for ${result.location.name}.`
+  const confidence = 0.9
 
   return buildWeatherEnvelope({
     source: {
@@ -138,8 +171,32 @@ function wrapForecast(result: Awaited<ReturnType<typeof getForecast>>) {
             end: last.endTime,
           }
         : undefined,
-    confidence: 0.9,
+    confidence,
     summary,
+    normalizedForecast: {
+      domain: 'forecast',
+      headline: `The official forecast for ${result.location.name} currently leads with: ${summary}`,
+      mostLikelyScenario:
+        first?.detailedForecast ?? first?.shortForecast ?? summary,
+      alternateScenarios: [],
+      likelihood: confidenceLevel(confidence),
+      confidence: confidenceLevel(confidence),
+      keySignals: [
+        {
+          category: 'official',
+          weight: 'high',
+          label: 'Official forecast',
+          detail: summary,
+          sourceIds: [result.source.sourceId],
+          productIds: [result.source.productId],
+        } satisfies WeatherSignal,
+      ],
+      conflicts: [],
+      failureModes: [],
+      whatWouldChange: [],
+      productCards: [],
+      recommendedProductIds: [],
+    },
     data: {
       generatedAt: result.generatedAt,
       periods: result.periods,
@@ -165,6 +222,7 @@ function wrapAlerts(
           end: firstAlert.expires,
         }
       : undefined
+  const confidence = 0.96
 
   return buildWeatherEnvelope({
     source: {
@@ -179,8 +237,34 @@ function wrapAlerts(
     },
     validRange,
     validAt: validRange?.start ?? nowIso(),
-    confidence: 0.96,
+    confidence,
     summary,
+    normalizedForecast: {
+      domain: 'alerts',
+      headline: summary,
+      mostLikelyScenario: summary,
+      alternateScenarios: [],
+      likelihood: confidenceLevel(confidence),
+      confidence: confidenceLevel(confidence),
+      keySignals:
+        firstAlert != null
+          ? [
+              {
+                category: 'hazard',
+                weight: 'high',
+                label: firstAlert.headline,
+                detail: firstAlert.description,
+                sourceIds: ['weather-gov'],
+                productIds: ['alerts'],
+              } satisfies WeatherSignal,
+            ]
+          : [],
+      conflicts: [],
+      failureModes: [],
+      whatWouldChange: [],
+      productCards: [],
+      recommendedProductIds: [],
+    },
     data: {
       alerts: result,
     },
@@ -188,71 +272,14 @@ function wrapAlerts(
   })
 }
 
-function wrapAviation(
-  result: Awaited<ReturnType<typeof getAviationSummary>>,
-  stationId: string,
-) {
-  return buildWeatherEnvelope({
-    source: {
-      sourceId: 'aviationweather-gov',
-      productId: 'aviation-summary',
-      label: 'Aviation Weather Center',
-      url: result.citations[0]?.url ?? 'https://aviationweather.gov/data/api/',
-    },
-    location: {
-      query: stationId,
-      name: stationId,
-      latitude: 0,
-      longitude: 0,
-      resolvedBy: 'station-id',
-    },
-    units: {
-      aviation: 'aviation-native',
-    },
-    validAt: nowIso(),
-    confidence: 0.85,
-    summary: result.summary,
-    data: {
-      stationId: result.stationId,
-      metar: result.metar,
-      taf: result.taf,
-    },
-    citations: result.citations,
-  })
-}
-
-function buildResearchOutline(title: string, focus: string) {
-  return {
-    title,
-    sections: [
-      { heading: 'Setup', summary: focus },
-      {
-        heading: 'Main risks',
-        summary:
-          'Highlight the most relevant hazards, timing questions, or source disagreements.',
-      },
-      {
-        heading: 'Uncertainty',
-        summary:
-          'State what could change and which source should be checked next.',
-      },
-    ],
-  }
-}
-
-function buildToolSet(
-  coreTools: Array<ServerTool<any, any>>,
-  extraTools: Array<ServerTool<any, any>>,
-) {
-  return [...new Set([...coreTools, ...extraTools])]
-}
-
 export function buildServerTools(
   app: FastifyInstance,
   classification: RequestClassification,
 ) {
   const resolveLocation = resolveLocationToolDef.server(
-    withProgress('Resolving location', ({ query }) => geocodeQuery(app, query)),
+    withProgress('Resolving location', ({ locationQuery }) =>
+      geocodeQuery(app, locationQuery),
+    ),
   )
   const currentConditions = getCurrentConditionsToolDef.server(
     withProgress('Fetching current conditions', async ({ locationQuery }) =>
@@ -270,24 +297,39 @@ export function buildServerTools(
       return wrapAlerts(await getAlerts(app, locationQuery), location)
     }),
   )
-  const aviation = getAviationWeatherToolDef.server(
-    withProgress('Fetching aviation weather', async ({ stationId }) =>
-      wrapAviation(await getAviationSummary(app, stationId), stationId),
+  const shortRangeGuidance = getShortRangeGuidanceToolDef.server(
+    withProgress('Fetching short-range guidance', ({ locationQuery }) =>
+      getShortRangeGuidance(app, locationQuery),
     ),
   )
-  const spcSevere = getSpcSevereProductsToolDef.server(
-    withProgress('Fetching severe-weather outlooks', ({ locationQuery }) =>
-      getSpcSevereProducts(app, locationQuery ?? 'United States'),
+  const globalGuidance = getGlobalGuidanceToolDef.server(
+    withProgress('Fetching global guidance', ({ locationQuery }) =>
+      getGlobalGuidance(app, locationQuery ?? 'United States'),
+    ),
+  )
+  const severeContext = getSevereContextToolDef.server(
+    withProgress('Fetching severe context', ({ locationQuery }) =>
+      getSevereContext(app, locationQuery ?? 'United States'),
+    ),
+  )
+  const precipFloodContext = getPrecipFloodContextToolDef.server(
+    withProgress('Fetching precipitation and flood context', ({ locationQuery }) =>
+      getPrecipFloodContext(app, locationQuery),
+    ),
+  )
+  const radarSatelliteNowcast = getRadarSatelliteNowcastToolDef.server(
+    withProgress('Fetching radar, satellite, and nowcast context', ({ locationQuery }) =>
+      getRadarSatelliteNowcast(app, locationQuery),
+    ),
+  )
+  const aviationContext = getAviationContextToolDef.server(
+    withProgress('Fetching aviation context', ({ stationId }) =>
+      getAviationContext(app, stationId),
     ),
   )
   const fireWeather = getFireWeatherProductsToolDef.server(
     withProgress('Fetching fire-weather outlooks', ({ locationQuery }) =>
       getFireWeatherProducts(app, locationQuery),
-    ),
-  )
-  const wpcQpfEro = getWpcQpfEroToolDef.server(
-    withProgress('Fetching rainfall outlooks', ({ locationQuery }) =>
-      getWpcQpfEro(app, locationQuery),
     ),
   )
   const wpcWinter = getWpcWinterWeatherToolDef.server(
@@ -298,77 +340,6 @@ export function buildServerTools(
   const wpcMedium = getWpcMediumRangeHazardsToolDef.server(
     withProgress('Fetching medium-range hazards', ({ locationQuery }) =>
       getWpcMediumRangeHazards(app, locationQuery ?? 'United States'),
-    ),
-  )
-  const hydrology = getHydrologyNwpsToolDef.server(
-    withProgress('Fetching hydrology guidance', ({ locationQuery }) =>
-      getHydrologyNwps(app, locationQuery),
-    ),
-  )
-  const nexrad = getNexradRadarToolDef.server(
-    withProgress('Fetching radar context', ({ locationQuery }) =>
-      getNexradRadar(app, locationQuery),
-    ),
-  )
-  const goes = getGoesSatelliteToolDef.server(
-    withProgress('Fetching satellite context', ({ locationQuery }) =>
-      getGoesSatellite(app, locationQuery),
-    ),
-  )
-  const mrms = getMrmsProductsToolDef.server(
-    withProgress('Fetching MRMS products', ({ locationQuery }) =>
-      getMrmsProducts(app, locationQuery),
-    ),
-  )
-  const shortRangeModels = getShortRangeModelGuidanceToolDef.server(
-    withProgress('Fetching short-range model guidance', ({ locationQuery }) =>
-      getShortRangeModelGuidance(app, locationQuery),
-    ),
-  )
-  const blendAnalysis = getBlendAndAnalysisGuidanceToolDef.server(
-    withProgress('Fetching blend and analysis guidance', ({ locationQuery }) =>
-      getBlendAndAnalysisGuidance(app, locationQuery),
-    ),
-  )
-  const globalModels = getGlobalModelGuidanceToolDef.server(
-    withProgress('Fetching global model guidance', ({ locationQuery }) =>
-      getGlobalModelGuidance(app, locationQuery ?? 'United States'),
-    ),
-  )
-  const modelComparison = compareModelsToolDef.server(
-    withProgress(
-      'Comparing model guidance',
-      async ({ locationName, comparedModels }) => {
-        const comparison = compareModels(locationName, comparedModels)
-        const previewArtifact = await generateArtifact(app, {
-          artifactType: 'model-comparison-panel',
-          locationQuery: locationName,
-          prompt: `Model comparison for ${locationName}`,
-          comparisonModels: comparedModels.map((model) => ({
-            sourceId: model.sourceId,
-            modelLabel: model.modelLabel,
-            summary: model.summary,
-            cycleTime: model.runTime,
-            validTime: model.validTime,
-          })),
-        })
-        const artifactHandle = {
-          artifactId: previewArtifact.artifactId,
-          type: String(previewArtifact.type),
-          title: previewArtifact.title,
-          href: previewArtifact.href,
-          mimeType: previewArtifact.mimeType,
-        }
-
-        return {
-          ...comparison,
-          artifacts: [artifactHandle],
-          ...previewFromArtifact(
-            artifactHandle,
-            `Model comparison panel for ${locationName}`,
-          ),
-        }
-      },
     ),
   )
   const tropical = getTropicalWeatherToolDef.server(
@@ -396,32 +367,9 @@ export function buildServerTools(
       getStormHistory(app, locationQuery),
     ),
   )
-  const citations = generateCitationBundleToolDef.server(
-    withProgress(
-      'Assembling source bundle',
-      async ({ sourceIds, productIds }) => ({
-        citations: sourceIds.map((sourceId, index) => ({
-          id: `${sourceId}:${productIds[index] ?? 'catalog'}`,
-          label: `${sourceId} ${productIds[index] ?? 'catalog'}`,
-          sourceId,
-          productId: productIds[index] ?? 'catalog',
-        })),
-        manifests: chooseSourceManifests(classification).filter((manifest) =>
-          sourceIds.includes(manifest.sourceId),
-        ),
-      }),
-    ),
-  )
-  const reportOutline = generateReportOutlineToolDef.server(
-    withProgress('Planning weather brief', async ({ title, focus }) =>
-      buildResearchOutline(title, focus),
-    ),
-  )
-  const artifact = generateWeatherArtifactToolDef.server(
-    withProgress(
-      'Generating weather artifact',
-      ({ artifactType, locationQuery, prompt }) =>
-        generateArtifact(app, { artifactType, locationQuery, prompt }),
+  const synthesis = synthesizeWeatherConclusionToolDef.server(
+    withProgress('Synthesizing weather conclusion', async (args) =>
+      synthesizeWeatherConclusion(args as any),
     ),
   )
 
@@ -434,165 +382,69 @@ export function buildServerTools(
 
   switch (classification.intent) {
     case 'aviation':
-      return buildToolSet(coreTools, [aviation, citations])
+      return buildToolSet(coreTools, [aviationContext, synthesis])
     case 'severe-weather':
       return buildToolSet(coreTools, [
-        spcSevere,
-        nexrad,
-        goes,
-        mrms,
-        shortRangeModels,
-        reportOutline,
-        artifact,
-        citations,
+        severeContext,
+        shortRangeGuidance,
+        radarSatelliteNowcast,
+        synthesis,
       ])
     case 'fire-weather':
-      return buildToolSet(coreTools, [
-        fireWeather,
-        forecast,
-        reportOutline,
-        citations,
-      ])
+      return buildToolSet(coreTools, [fireWeather, shortRangeGuidance])
     case 'precipitation':
-      return buildToolSet(coreTools, [
-        wpcQpfEro,
-        hydrology,
-        mrms,
-        blendAnalysis,
-        artifact,
-        citations,
-      ])
-    case 'winter-weather':
-      return buildToolSet(coreTools, [
-        wpcWinter,
-        shortRangeModels,
-        blendAnalysis,
-        artifact,
-        citations,
-      ])
-    case 'medium-range':
-      return buildToolSet(coreTools, [
-        wpcMedium,
-        globalModels,
-        modelComparison,
-        reportOutline,
-        citations,
-      ])
     case 'hydrology':
       return buildToolSet(coreTools, [
-        hydrology,
-        wpcQpfEro,
-        mrms,
-        artifact,
-        reportOutline,
-        citations,
+        precipFloodContext,
+        radarSatelliteNowcast,
+        synthesis,
+      ])
+    case 'winter-weather':
+      return buildToolSet(coreTools, [wpcWinter, shortRangeGuidance])
+    case 'medium-range':
+    case 'global-model':
+      return buildToolSet(coreTools, [
+        globalGuidance,
+        wpcMedium,
+        synthesis,
       ])
     case 'radar':
     case 'radar-analysis':
-      return buildToolSet(coreTools, [
-        nexrad,
-        mrms,
-        spcSevere,
-        artifact,
-        reportOutline,
-        citations,
-      ])
     case 'satellite':
-      return buildToolSet(coreTools, [goes, artifact, citations])
     case 'mrms':
-      return buildToolSet(coreTools, [
-        mrms,
-        nexrad,
-        hydrology,
-        artifact,
-        citations,
-      ])
+      return buildToolSet(coreTools, [radarSatelliteNowcast, synthesis])
     case 'short-range-model':
-      return buildToolSet(coreTools, [
-        shortRangeModels,
-        blendAnalysis,
-        modelComparison,
-        artifact,
-        citations,
-      ])
     case 'blend-analysis':
       return buildToolSet(coreTools, [
-        blendAnalysis,
-        shortRangeModels,
-        modelComparison,
-        citations,
-      ])
-    case 'global-model':
-      return buildToolSet(coreTools, [
-        globalModels,
-        modelComparison,
-        wpcMedium,
-        reportOutline,
-        citations,
-      ])
-    case 'model-comparison':
-      return buildToolSet(coreTools, [
-        shortRangeModels,
-        blendAnalysis,
-        globalModels,
-        modelComparison,
-        artifact,
-        reportOutline,
-        citations,
+        shortRangeGuidance,
+        radarSatelliteNowcast,
+        synthesis,
       ])
     case 'tropical':
-      return buildToolSet(coreTools, [
-        tropical,
-        reportOutline,
-        artifact,
-        citations,
-      ])
+      return buildToolSet(coreTools, [tropical])
     case 'marine':
-      return buildToolSet(coreTools, [marine, artifact, citations])
+      return buildToolSet(coreTools, [marine])
     case 'upper-air':
-      return buildToolSet(coreTools, [
-        upperAir,
-        artifact,
-        reportOutline,
-        citations,
-      ])
+      return buildToolSet(coreTools, [upperAir])
     case 'historical-climate':
-      return buildToolSet(coreTools, [
-        historicalClimate,
-        reportOutline,
-        artifact,
-        citations,
-      ])
+      return buildToolSet(coreTools, [historicalClimate])
     case 'storm-history':
-      return buildToolSet(coreTools, [
-        stormHistory,
-        historicalClimate,
-        reportOutline,
-        artifact,
-        citations,
-      ])
+      return buildToolSet(coreTools, [stormHistory, historicalClimate])
     case 'research-brief':
     case 'weather-analysis':
       return buildToolSet(coreTools, [
-        spcSevere,
-        wpcQpfEro,
-        hydrology,
-        nexrad,
-        goes,
-        mrms,
-        shortRangeModels,
-        blendAnalysis,
-        globalModels,
-        tropical,
-        marine,
-        upperAir,
-        historicalClimate,
-        stormHistory,
-        reportOutline,
-        artifact,
-        citations,
+        severeContext,
+        precipFloodContext,
+        radarSatelliteNowcast,
+        shortRangeGuidance,
+        globalGuidance,
+        synthesis,
       ])
+    case 'forecast':
+    case 'alerts':
+    case 'current-conditions':
+    case 'general-weather':
     default:
-      return buildToolSet(coreTools, [citations])
+      return coreTools
   }
 }

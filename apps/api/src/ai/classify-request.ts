@@ -31,7 +31,6 @@ const artifactTerms = [
   'loop',
   'chart',
   'plot',
-  'panel',
   'artifact',
   'skewt',
   'skew-t',
@@ -53,6 +52,7 @@ const aviationTerms = [
   'pirep',
   'cwa',
 ]
+
 const tropicalTerms = [
   'hurricane',
   'tropical storm',
@@ -62,6 +62,7 @@ const tropicalTerms = [
   'landfall',
   'invest',
 ]
+
 const marineTerms = [
   'marine',
   'ocean',
@@ -78,6 +79,7 @@ const marineTerms = [
   'wavewatch',
   'buoy',
 ]
+
 const upperAirTerms = [
   'sounding',
   'skewt',
@@ -88,6 +90,7 @@ const upperAirTerms = [
   'hodograph',
   'parcel',
 ]
+
 const fireWeatherTerms = [
   'fire weather',
   'wildfire',
@@ -95,6 +98,7 @@ const fireWeatherTerms = [
   'brush fire',
   'spread risk',
 ]
+
 const hydrologyTerms = [
   'river',
   'stream',
@@ -104,6 +108,7 @@ const hydrologyTerms = [
   'flood stage',
   'hydrology',
 ]
+
 const radarTerms = ['radar', 'reflectivity', 'velocity', 'mesocyclone']
 const satelliteTerms = [
   'satellite',
@@ -115,6 +120,7 @@ const satelliteTerms = [
   'infrared',
   'visible imagery',
 ]
+
 const mrmsTerms = [
   'mrms',
   'qpe',
@@ -122,6 +128,7 @@ const mrmsTerms = [
   'precipitation rate',
   'lowest altitude reflectivity',
 ]
+
 const precipitationTerms = [
   'qpf',
   'excessive rainfall',
@@ -130,6 +137,7 @@ const precipitationTerms = [
   'rainfall total',
   'rain totals',
 ]
+
 const winterTerms = [
   'snow',
   'ice',
@@ -138,6 +146,7 @@ const winterTerms = [
   'blizzard',
   'winter storm',
 ]
+
 const severeTerms = [
   'tornado',
   'hail',
@@ -154,7 +163,9 @@ const severeTerms = [
   'moderate risk',
   'high risk',
   'severe',
+  'chase target',
 ]
+
 const shortRangeModelTerms = [
   'hrrr',
   'rap',
@@ -164,7 +175,9 @@ const shortRangeModelTerms = [
   'fog timing',
   'snow band',
 ]
+
 const blendAnalysisTerms = ['nbm', 'rtma', 'urma', 'blend', 'surface analysis']
+
 const globalModelTerms = [
   'gfs',
   'gefs',
@@ -176,6 +189,7 @@ const globalModelTerms = [
   'days 2-10',
   'medium range',
 ]
+
 const stormHistoryTerms = [
   'storm history',
   'storm events',
@@ -183,6 +197,7 @@ const stormHistoryTerms = [
   'what happened',
   'storm data',
 ]
+
 const historicalClimateTerms = [
   'climate',
   'normal',
@@ -193,7 +208,9 @@ const historicalClimateTerms = [
   'record high',
   'record low',
 ]
+
 const alertTerms = ['alert', 'warning', 'watch', 'advisory']
+
 const genericModelTerms = [
   'current models',
   'current model',
@@ -201,7 +218,10 @@ const genericModelTerms = [
   'latest model',
   'model guidance',
   'ensemble guidance',
+  'models say',
+  'what do the models say',
 ]
+
 const broadStormLocatorTerms = [
   'where are the best storms',
   'where are the most severe storms',
@@ -293,24 +313,18 @@ function buildClassification(
   const defaultNeedsArtifact =
     artifactRequested ||
     researchRequested ||
-    [
-      'radar',
-      'satellite',
-      'model-comparison',
-      'upper-air',
-      'storm-history',
-    ].includes(intent)
+    ['radar', 'satellite', 'upper-air', 'storm-history', 'radar-analysis'].includes(intent)
   const needsArtifact = options.needsArtifact ?? defaultNeedsArtifact
 
   const defaultTaskClass =
     researchRequested ||
     [
-      'model-comparison',
       'upper-air',
       'historical-climate',
       'storm-history',
       'research-brief',
       'radar-analysis',
+      'weather-analysis',
     ].includes(intent)
       ? 'research'
       : 'chat'
@@ -333,9 +347,14 @@ function includesSevereSignal(input: string) {
       'storms happening',
       'storm corridor',
       'storm chase',
+      'tornado target',
     ]) ||
     (input.includes('storm') && input.includes('severe'))
   )
+}
+
+function isComparisonPrompt(input: string) {
+  return includesAny(input, ['compare', 'comparison', 'versus', 'vs'])
 }
 
 export function classifyRequest(message: string): RequestClassification {
@@ -393,13 +412,15 @@ export function classifyRequest(message: string): RequestClassification {
   }
 
   if (includesAny(normalized, hydrologyTerms)) {
-    return buildClassification('hydrology', normalized)
+    return buildClassification('hydrology', normalized, {
+      taskClass: 'research',
+      needsArtifact: false,
+    })
   }
 
   if (includesAny(normalized, radarTerms)) {
     return buildClassification(
-      includesAny(normalized, researchTerms) ||
-        includesAny(normalized, artifactTerms)
+      includesAny(normalized, researchTerms) || includesAny(normalized, artifactTerms)
         ? 'radar-analysis'
         : 'radar',
       normalized,
@@ -415,17 +436,42 @@ export function classifyRequest(message: string): RequestClassification {
   }
 
   if (
-    includesAny(normalized, ['compare', 'comparison', 'versus', 'vs']) &&
+    isComparisonPrompt(normalized) &&
     hasMultipleModelMentions(normalized)
   ) {
-    return buildClassification('model-comparison', normalized, {
-      timeHorizonHours: inferTimeHorizonHours(normalized),
+    if (includesAny(normalized, globalModelTerms) || timeHorizonHours > 48) {
+      return buildClassification('global-model', normalized, {
+        taskClass: 'research',
+        timeHorizonHours,
+        needsArtifact: false,
+      })
+    }
+
+    return buildClassification('short-range-model', normalized, {
+      taskClass: 'research',
+      timeHorizonHours,
+      needsArtifact: false,
+    })
+  }
+
+  if (includesAny(normalized, genericModelTerms)) {
+    if (includesAny(normalized, globalModelTerms) || timeHorizonHours > 48) {
+      return buildClassification('global-model', normalized, {
+        taskClass: 'research',
+        timeHorizonHours,
+        needsArtifact: false,
+      })
+    }
+
+    return buildClassification('short-range-model', normalized, {
+      taskClass: 'research',
+      timeHorizonHours,
+      needsArtifact: false,
     })
   }
 
   const severeShortRangeAnalysis =
-    includesAny(normalized, shortRangeModelTerms) &&
-    includesSevereSignal(normalized)
+    includesAny(normalized, shortRangeModelTerms) && includesSevereSignal(normalized)
 
   if (severeShortRangeAnalysis) {
     return buildClassification('severe-weather', normalized, {
@@ -437,23 +483,24 @@ export function classifyRequest(message: string): RequestClassification {
   }
 
   if (includesAny(normalized, blendAnalysisTerms)) {
-    return buildClassification('blend-analysis', normalized)
+    return buildClassification('blend-analysis', normalized, {
+      needsArtifact: false,
+    })
   }
 
   if (includesAny(normalized, shortRangeModelTerms)) {
-    return buildClassification('short-range-model', normalized)
+    return buildClassification('short-range-model', normalized, {
+      taskClass: hasMultipleModelMentions(normalized) ? 'research' : 'chat',
+      needsArtifact: false,
+    })
   }
 
   if (includesAny(normalized, globalModelTerms)) {
-    return buildClassification(
-      hasMultipleModelMentions(normalized)
-        ? 'model-comparison'
-        : 'global-model',
-      normalized,
-      {
-        timeHorizonHours: inferTimeHorizonHours(normalized),
-      },
-    )
+    return buildClassification('global-model', normalized, {
+      taskClass: 'research',
+      timeHorizonHours,
+      needsArtifact: false,
+    })
   }
 
   if (includesAny(normalized, winterTerms)) {
@@ -461,7 +508,10 @@ export function classifyRequest(message: string): RequestClassification {
   }
 
   if (includesAny(normalized, precipitationTerms)) {
-    return buildClassification('precipitation', normalized)
+    return buildClassification('precipitation', normalized, {
+      taskClass: 'research',
+      needsArtifact: false,
+    })
   }
 
   if (includesSevereSignal(normalized) || broadStormLocator) {
@@ -482,7 +532,11 @@ export function classifyRequest(message: string): RequestClassification {
   }
 
   if (includesAny(normalized, [...researchTerms, 'weather analysis'])) {
-    return buildClassification('research-brief', normalized)
+    return buildClassification('weather-analysis', normalized, {
+      taskClass: 'research',
+      needsArtifact: false,
+      locationRequired: false,
+    })
   }
 
   if (

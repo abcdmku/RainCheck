@@ -192,38 +192,6 @@ def _html_page(title: str, body: str) -> str:
 </html>"""
 
 
-def _model_comparison_svg(payload: ArtifactRequest) -> str:
-    rows = payload.comparisonModels or []
-    cards = []
-    for index, model in enumerate(rows[:4]):
-        x = 28 + (index % 2) * 332
-        y = 92 + (index // 2) * 82
-        details = " | ".join(
-            value
-            for value in [
-                model.cycleTime.isoformat() if model.cycleTime else None,
-                model.validTime.isoformat() if model.validTime else None,
-            ]
-            if value
-        )
-        cards.append(
-            f"""
-            <rect x="{x}" y="{y}" width="304" height="66" rx="14" fill="#0f1d22" stroke="#23363f" />
-            <text x="{x + 14}" y="{y + 22}" fill="#ffd47a" font-family="sans-serif" font-size="13">{escape(model.modelLabel)}</text>
-            <text x="{x + 14}" y="{y + 39}" fill="#86a0a5" font-family="sans-serif" font-size="10">{escape(details or model.sourceId)}</text>
-            <text x="{x + 14}" y="{y + 55}" fill="#dce7e7" font-family="sans-serif" font-size="11">{escape(model.summary[:52])}</text>
-            """
-        )
-
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="720" height="280" viewBox="0 0 720 280">
-  <rect width="720" height="280" rx="24" fill="#091419" />
-  <text x="28" y="36" fill="#eef5f5" font-family="sans-serif" font-size="20">RainCheck Model Comparison</text>
-  <text x="28" y="58" fill="#9cb0b4" font-family="sans-serif" font-size="12">{escape(payload.display_location())}</text>
-  <text x="28" y="76" fill="#7f999e" font-family="sans-serif" font-size="11">{escape(payload.prompt)}</text>
-  {''.join(cards) or '<text x="28" y="120" fill="#dce7e7" font-family="sans-serif" font-size="12">No model comparison rows were supplied.</text>'}
-</svg>"""
-
-
 def _build_report_body(payload: ArtifactRequest, created_at: datetime, *, brief: bool) -> str:
     sections = payload.sections or (
         ["Situation", "Near-term impacts", "Uncertainty"]
@@ -352,23 +320,6 @@ def generate_satellite_loop(settings: Settings, payload: ArtifactRequest) -> Art
         artifact_type="satellite-loop",
         title="RainCheck Satellite Loop",
         accent="#6b9cff",
-    )
-
-
-def generate_model_comparison_panel(
-    settings: Settings, payload: ArtifactRequest
-) -> ArtifactResponse:
-    created_at = _timestamp()
-    artifact_id = _artifact_id("model-comparison-panel", "svg", created_at)
-    svg = _model_comparison_svg(payload)
-    _write_file(settings.artifacts_dir, artifact_id, svg)
-    return ArtifactResponse(
-        artifactId=artifact_id,
-        artifactType="model-comparison-panel",
-        title=f"Model comparison for {payload.display_location()}",
-        href=f"{settings.public_base_path}/{artifact_id}",
-        mimeType="image/svg+xml",
-        createdAt=created_at,
     )
 
 
@@ -524,8 +475,6 @@ def generate_weather_artifact(
             return generate_radar_loop(settings, payload)
         case "satellite-loop":
             return generate_satellite_loop(settings, payload)
-        case "model-comparison-panel":
-            return generate_model_comparison_panel(settings, payload)
         case "hydrograph":
             return generate_hydrograph(settings, payload)
         case "skewt":
