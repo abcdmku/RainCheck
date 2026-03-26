@@ -16,6 +16,7 @@ function makeCitation(productId: string, url: string) {
     label: `Aviation Weather Center ${productId.toUpperCase()}`,
     sourceId: 'aviationweather-gov',
     productId,
+    kind: 'api',
     url,
   })
 }

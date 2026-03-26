@@ -5,18 +5,17 @@ import {
   getCurrentConditionsToolDef,
   getFireWeatherProductsToolDef,
   getForecastToolDef,
-  getGlobalGuidanceToolDef,
   getHistoricalClimateToolDef,
   getMarineOceanGuidanceToolDef,
-  getPrecipFloodContextToolDef,
-  getRadarSatelliteNowcastToolDef,
   getSevereContextToolDef,
-  getShortRangeGuidanceToolDef,
+  deriveGlobalWeatherToolDef,
+  deriveHydrologyWeatherToolDef,
+  deriveRadarNowcastToolDef,
+  deriveSatelliteWeatherToolDef,
+  deriveShortRangeWeatherToolDef,
   getStormHistoryToolDef,
   getTropicalWeatherToolDef,
   getUpperAirSoundingsToolDef,
-  getWpcMediumRangeHazardsToolDef,
-  getWpcWinterWeatherToolDef,
   type RequestClassification,
   resolveLocationToolDef,
   synthesizeWeatherConclusionToolDef,
@@ -24,27 +23,28 @@ import {
 import type { ServerTool } from '@tanstack/ai'
 import type { FastifyInstance } from 'fastify'
 import { getHistoricalClimate, getStormHistory } from '../weather/climate'
-import {
-  getAviationContext,
-  getPrecipFloodContext,
-  getRadarSatelliteNowcast,
-  getSevereContext,
-} from '../weather/domain-tools'
+import { planWeatherDerivations } from '../weather/derivation-plan'
+import { getAviationContext, getSevereContext } from '../weather/domain-tools'
 import { getFireWeatherProducts } from '../weather/fire-weather'
 import { geocodeQuery } from '../weather/geocode'
 import { getMarineOceanGuidance } from '../weather/marine'
-import { getGlobalGuidance, getShortRangeGuidance } from '../weather/models'
 import { getAlerts, getCurrentConditions, getForecast } from '../weather/nws'
 import { buildWeatherEnvelope, type WeatherSignal } from '../weather/runtime'
-import { generateArtifact } from '../weather/service-client'
-import { synthesizeWeatherConclusion } from '../weather/synthesis'
+import {
+  deriveGlobalWeather,
+  deriveHydrologyWeather,
+  deriveRadarNowcast,
+  deriveSatelliteWeather,
+  deriveShortRangeWeather,
+  generateArtifact,
+  synthesizeWeatherConclusion,
+} from '../weather/service-client'
 import {
   formatIsoLocalTimeRange,
   normalizeTimingLanguage,
 } from '../weather/timing-language'
 import { getTropicalWeather } from '../weather/tropical'
 import { getUpperAirSoundings } from '../weather/upper-air'
-import { getWpcMediumRangeHazards, getWpcWinterWeather } from '../weather/wpc'
 
 function withProgress<TArgs, TResult>(
   label: string,
@@ -77,6 +77,26 @@ function confidenceLevel(value: number): 'low' | 'medium' | 'high' {
   }
 
   return 'low'
+}
+
+function shouldSynthesize(classification: RequestClassification) {
+  return [
+    'aviation',
+    'severe-weather',
+    'precipitation',
+    'hydrology',
+    'medium-range',
+    'global-model',
+    'radar',
+    'radar-analysis',
+    'satellite',
+    'mrms',
+    'short-range-model',
+    'blend-analysis',
+    'weather-analysis',
+    'research-brief',
+    'winter-weather',
+  ].includes(classification.intent)
 }
 
 function buildToolSet(
@@ -309,33 +329,6 @@ export function buildServerTools(
       return wrapAlerts(await getAlerts(app, locationQuery), location)
     }),
   )
-  const shortRangeGuidance = getShortRangeGuidanceToolDef.server(
-    withProgress('Fetching short-range guidance', ({ locationQuery }) =>
-      getShortRangeGuidance(app, locationQuery),
-    ),
-  )
-  const globalGuidance = getGlobalGuidanceToolDef.server(
-    withProgress('Fetching global guidance', ({ locationQuery }) =>
-      getGlobalGuidance(app, locationQuery ?? 'United States'),
-    ),
-  )
-  const severeContext = getSevereContextToolDef.server(
-    withProgress('Fetching severe context', ({ locationQuery }) =>
-      getSevereContext(app, locationQuery ?? 'United States'),
-    ),
-  )
-  const precipFloodContext = getPrecipFloodContextToolDef.server(
-    withProgress(
-      'Fetching precipitation and flood context',
-      ({ locationQuery }) => getPrecipFloodContext(app, locationQuery),
-    ),
-  )
-  const radarSatelliteNowcast = getRadarSatelliteNowcastToolDef.server(
-    withProgress(
-      'Fetching radar, satellite, and nowcast context',
-      ({ locationQuery }) => getRadarSatelliteNowcast(app, locationQuery),
-    ),
-  )
   const aviationContext = getAviationContextToolDef.server(
     withProgress('Fetching aviation context', ({ stationId }) =>
       getAviationContext(app, stationId),
@@ -346,14 +339,9 @@ export function buildServerTools(
       getFireWeatherProducts(app, locationQuery),
     ),
   )
-  const wpcWinter = getWpcWinterWeatherToolDef.server(
-    withProgress('Fetching winter weather guidance', ({ locationQuery }) =>
-      getWpcWinterWeather(app, locationQuery),
-    ),
-  )
-  const wpcMedium = getWpcMediumRangeHazardsToolDef.server(
-    withProgress('Fetching medium-range hazards', ({ locationQuery }) =>
-      getWpcMediumRangeHazards(app, locationQuery ?? 'United States'),
+  const severeContext = getSevereContextToolDef.server(
+    withProgress('Fetching severe-weather context', ({ locationQuery }) =>
+      getSevereContext(app, locationQuery),
     ),
   )
   const tropical = getTropicalWeatherToolDef.server(
@@ -388,7 +376,33 @@ export function buildServerTools(
   )
   const synthesis = synthesizeWeatherConclusionToolDef.server(
     withProgress('Synthesizing weather conclusion', async (args) =>
-      synthesizeWeatherConclusion(args as any),
+      synthesizeWeatherConclusion(app, args as any),
+    ),
+  )
+
+  const shortRangeDerive = deriveShortRangeWeatherToolDef.server(
+    withProgress('Deriving short-range weather evidence', async (args) =>
+      deriveShortRangeWeather(app, args as any),
+    ),
+  )
+  const globalDerive = deriveGlobalWeatherToolDef.server(
+    withProgress('Deriving global weather evidence', async (args) =>
+      deriveGlobalWeather(app, args as any),
+    ),
+  )
+  const radarDerive = deriveRadarNowcastToolDef.server(
+    withProgress('Deriving radar nowcast evidence', async (args) =>
+      deriveRadarNowcast(app, args as any),
+    ),
+  )
+  const satelliteDerive = deriveSatelliteWeatherToolDef.server(
+    withProgress('Deriving satellite weather evidence', async (args) =>
+      deriveSatelliteWeather(app, args as any),
+    ),
+  )
+  const hydrologyDerive = deriveHydrologyWeatherToolDef.server(
+    withProgress('Deriving hydrology weather evidence', async (args) =>
+      deriveHydrologyWeather(app, args as any),
     ),
   )
 
@@ -400,45 +414,46 @@ export function buildServerTools(
   ]
   const artifactTools: Array<ServerTool<any, any>> =
     classification.needsArtifact ? [weatherArtifact] : []
+  const deriveToolByEndpoint: Record<
+    'short-range' | 'global' | 'radar-nowcast' | 'satellite' | 'hydrology',
+    ServerTool<any, any>
+  > = {
+    'short-range': shortRangeDerive,
+    global: globalDerive,
+    'radar-nowcast': radarDerive,
+    satellite: satelliteDerive,
+    hydrology: hydrologyDerive,
+  }
+  const selectedDerivations = planWeatherDerivations(classification).map(
+    (endpoint) => deriveToolByEndpoint[endpoint],
+  )
+  const synthesisTools = shouldSynthesize(classification) ? [synthesis] : []
   const buildWeatherToolSet = (extraTools: Array<ServerTool<any, any>>) =>
-    buildToolSet(coreTools, [...extraTools, ...artifactTools])
+    buildToolSet(coreTools, [...extraTools, ...synthesisTools, ...artifactTools])
 
   switch (classification.intent) {
     case 'aviation':
-      return buildWeatherToolSet([aviationContext, synthesis])
+      return buildWeatherToolSet([aviationContext])
     case 'severe-weather':
-      return buildWeatherToolSet([
-        severeContext,
-        shortRangeGuidance,
-        radarSatelliteNowcast,
-        synthesis,
-      ])
+      return buildWeatherToolSet([severeContext, ...selectedDerivations])
     case 'fire-weather':
-      return buildWeatherToolSet([fireWeather, shortRangeGuidance])
+      return buildWeatherToolSet([fireWeather, ...selectedDerivations])
     case 'precipitation':
     case 'hydrology':
-      return buildWeatherToolSet([
-        precipFloodContext,
-        radarSatelliteNowcast,
-        synthesis,
-      ])
+      return buildWeatherToolSet(selectedDerivations)
     case 'winter-weather':
-      return buildWeatherToolSet([wpcWinter, shortRangeGuidance])
+      return buildWeatherToolSet(selectedDerivations)
     case 'medium-range':
     case 'global-model':
-      return buildWeatherToolSet([globalGuidance, wpcMedium, synthesis])
+      return buildWeatherToolSet(selectedDerivations)
     case 'radar':
     case 'radar-analysis':
     case 'satellite':
     case 'mrms':
-      return buildWeatherToolSet([radarSatelliteNowcast, synthesis])
+      return buildWeatherToolSet(selectedDerivations)
     case 'short-range-model':
     case 'blend-analysis':
-      return buildWeatherToolSet([
-        shortRangeGuidance,
-        radarSatelliteNowcast,
-        synthesis,
-      ])
+      return buildWeatherToolSet(selectedDerivations)
     case 'tropical':
       return buildWeatherToolSet([tropical])
     case 'marine':
@@ -451,14 +466,7 @@ export function buildServerTools(
       return buildWeatherToolSet([stormHistory, historicalClimate])
     case 'research-brief':
     case 'weather-analysis':
-      return buildWeatherToolSet([
-        severeContext,
-        precipFloodContext,
-        radarSatelliteNowcast,
-        shortRangeGuidance,
-        globalGuidance,
-        synthesis,
-      ])
+      return buildWeatherToolSet(selectedDerivations)
     default:
       return buildWeatherToolSet([])
   }

@@ -4,6 +4,9 @@ pydantic<3.0,>=2.11
 uvicorn<1.0,>=0.35
 
 [analysis]
+arm_pyart<2.0,>=1.15
+cfgrib<1.0,>=0.9.15
+eccodes<3.0,>=2.41
 matplotlib<4.0,>=3.10
 metpy<2.0,>=1.7
 xarray<2026.0.0,>=2025.1.0

@@ -21,6 +21,9 @@ dev = [
   "pytest-asyncio>=1.1,<2.0"
 ]
 analysis = [
+  "arm_pyart>=1.15,<2.0",
+  "cfgrib>=0.9.15,<1.0",
+  "eccodes>=2.41,<3.0",
   "matplotlib>=3.10,<4.0",
   "metpy>=1.7,<2.0",
   "xarray>=2025.1.0,<2026.0.0"

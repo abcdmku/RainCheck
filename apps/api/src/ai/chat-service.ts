@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream'
+import type { Citation, RequestClassification } from '@raincheck/contracts'
 import {
   chat,
   maxIterations,
@@ -11,6 +12,7 @@ import { getConversation, saveMessage } from '../services/conversations-service'
 import { getProviderKeyMap, getSettings } from '../services/settings-service'
 import { buildAdapter } from './adapters'
 import { classifyConversationRequest } from './classify-request'
+import { sanitizeToolsForGemini } from './gemini-tool-schemas'
 import { chooseRoute } from './provider-routing'
 import { buildSystemPrompt } from './system-prompt'
 import { buildServerTools } from './tools'
@@ -82,6 +84,14 @@ function fallbackRunId() {
   return `fallback-run-${Date.now()}`
 }
 
+function replacementMessageId() {
+  return `replacement-${Date.now()}`
+}
+
+function replacementRunId() {
+  return `replacement-run-${Date.now()}`
+}
+
 async function* streamTextFallback(
   text: string,
   model: string,
@@ -97,6 +107,168 @@ async function* streamTextFallback(
     model,
     timestamp,
   } satisfies StreamChunk
+
+  yield {
+    type: 'TEXT_MESSAGE_START',
+    messageId,
+    model,
+    timestamp,
+    role: 'assistant',
+  } satisfies StreamChunk
+
+  yield {
+    type: 'TEXT_MESSAGE_CONTENT',
+    messageId,
+    model,
+    timestamp,
+    delta: normalizedText,
+    content: normalizedText,
+  } satisfies StreamChunk
+
+  yield {
+    type: 'TEXT_MESSAGE_END',
+    messageId,
+    model,
+    timestamp,
+  } satisfies StreamChunk
+
+  yield {
+    type: 'RUN_FINISHED',
+    runId,
+    model,
+    timestamp: Date.now(),
+    finishReason: 'stop',
+  } satisfies StreamChunk
+}
+
+function shouldBufferSevereWeatherResponse(
+  classification: RequestClassification,
+) {
+  return classification.intent === 'severe-weather'
+}
+
+const severeWeatherRefusalPatterns = [
+  /\bcannot provide guidance\b/i,
+  /\bcannot help\b/i,
+  /\bstorm chasing\b/i,
+  /\bintercept(?:ing)? tornado(?:es)?\b/i,
+  /\bextreme risks to life and property\b/i,
+  /\bsafety-focused weather information\b/i,
+] as const
+
+export function isSevereWeatherRefusalText(text: string) {
+  const normalized = text.trim()
+  if (!normalized) {
+    return false
+  }
+
+  const hasRefusal =
+    /\b(?:cannot|can't|will not|won't|do not)\b/i.test(normalized) &&
+    /\b(?:provide|help|assist|support)\b/i.test(normalized)
+  const hasStormChaseLanguage = severeWeatherRefusalPatterns.some((pattern) =>
+    pattern.test(normalized),
+  )
+
+  return hasRefusal && hasStormChaseLanguage
+}
+
+function buildSevereWeatherLimitationText(
+  classification: RequestClassification,
+) {
+  switch (classification.chaseGuidanceLevel) {
+    case 'full-route':
+      return 'RainCheck could not assemble enough live severe-weather evidence to support a route-level chase call yet. Try again after the next radar or model update.'
+    case 'exact-target':
+      return 'RainCheck could not assemble enough live severe-weather evidence to support an exact town or corridor target yet. Try again after the next radar or model update.'
+    case 'general-target':
+      return 'RainCheck could not assemble enough live severe-weather evidence to support a starting chase corridor yet. Try again after the next radar or model update.'
+    case 'analysis-only':
+    default:
+      return 'RainCheck could not assemble enough live severe-weather evidence to support a confident setup call yet. Try again after the next radar or model update.'
+  }
+}
+
+function extractBufferedRunMetadata(
+  chunks: Array<StreamChunk>,
+  model: string,
+) {
+  const runStart = chunks.find(
+    (chunk): chunk is Extract<StreamChunk, { type: 'RUN_STARTED' }> =>
+      chunk.type === 'RUN_STARTED',
+  )
+
+  return {
+    runId: runStart?.runId ?? replacementRunId(),
+    model: String(runStart?.model ?? model),
+  }
+}
+
+function shouldRecoverBufferedSevereWeatherAnswer(input: {
+  text: string
+  toolResults: Array<CompletedToolResult>
+  hadRunError: boolean
+}) {
+  if (input.hadRunError) {
+    return true
+  }
+
+  if (isSevereWeatherRefusalText(input.text)) {
+    return true
+  }
+
+  return !input.text.trim() && !hasSynthesisToolResult(input.toolResults)
+}
+
+async function* streamBufferedWeatherReplacement(input: {
+  bufferedChunks: Array<StreamChunk>
+  model: string
+  replacementText: string
+  recoveryResults?: Array<CompletedToolResult>
+}) {
+  const { runId, model } = extractBufferedRunMetadata(
+    input.bufferedChunks,
+    input.model,
+  )
+  const hasRunStarted = input.bufferedChunks.some(
+    (chunk) => chunk.type === 'RUN_STARTED',
+  )
+
+  if (!hasRunStarted) {
+    yield {
+      type: 'RUN_STARTED',
+      runId,
+      model,
+      timestamp: Date.now(),
+    } satisfies StreamChunk
+  }
+
+  for (const chunk of input.bufferedChunks) {
+    if (
+      isTextMessageChunk(chunk) ||
+      chunk.type === 'RUN_FINISHED' ||
+      chunk.type === 'RUN_ERROR'
+    ) {
+      continue
+    }
+
+    yield chunk
+  }
+
+  for (const toolResult of input.recoveryResults ?? []) {
+    yield {
+      type: 'TOOL_CALL_END',
+      toolCallId: toolResult.toolCallId,
+      toolName: toolResult.toolName,
+      model,
+      timestamp: Date.now(),
+      input: toolResult.input,
+      result: stringifyToolResult(toolResult.result),
+    } satisfies StreamChunk
+  }
+
+  const normalizedText = normalizeTimingLanguage(input.replacementText)
+  const messageId = replacementMessageId()
+  const timestamp = Date.now()
 
   yield {
     type: 'TEXT_MESSAGE_START',
@@ -284,11 +456,11 @@ const readOnlyWeatherToolNames = [
   'get_current_conditions',
   'get_forecast',
   'get_alerts',
-  'get_short_range_guidance',
-  'get_global_guidance',
-  'get_severe_context',
-  'get_precip_flood_context',
-  'get_radar_satellite_nowcast',
+  'derive_short_range_weather',
+  'derive_global_weather',
+  'derive_radar_nowcast',
+  'derive_satellite_weather',
+  'derive_hydrology_weather',
   'get_aviation_context',
   'get_fire_weather_products',
   'get_wpc_winter_weather',
@@ -326,6 +498,26 @@ function extractResultSourceTags(result: unknown) {
     for (const citation of asRecord.citations) {
       if (citation && typeof citation.sourceId === 'string') {
         sourceIds.add(citation.sourceId)
+      }
+    }
+  }
+
+  if (Array.isArray(asRecord.evidenceProducts)) {
+    for (const product of asRecord.evidenceProducts) {
+      if (!product || typeof product !== 'object') {
+        continue
+      }
+
+      if (typeof product.sourceName === 'string') {
+        sourceIds.add(product.sourceName)
+      }
+
+      if (Array.isArray(product.provenance)) {
+        for (const provenance of product.provenance) {
+          if (provenance && typeof provenance.sourceId === 'string') {
+            sourceIds.add(provenance.sourceId)
+          }
+        }
       }
     }
   }
@@ -622,6 +814,80 @@ export async function* streamGeminiWithToolContext(input: {
   }
 }
 
+export async function* streamValidatedSevereWeatherResponse(input: {
+  stream: AsyncIterable<StreamChunk>
+  classification: RequestClassification
+  route: {
+    provider: 'openai' | 'anthropic' | 'gemini' | 'openrouter'
+    model: string
+  }
+  latestText: string
+  recoverToolResults: (
+    toolResults: Array<CompletedToolResult>,
+  ) => Promise<Array<CompletedToolResult>>
+}): AsyncIterable<StreamChunk> {
+  if (!shouldBufferSevereWeatherResponse(input.classification)) {
+    yield* input.stream
+    return
+  }
+
+  const bufferedChunks: Array<StreamChunk> = []
+  const toolInputs = new Map<string, unknown>()
+  const completedToolResults: Array<CompletedToolResult> = []
+  let assistantText = ''
+  let hadRunError = false
+
+  try {
+    for await (const chunk of input.stream) {
+      bufferedChunks.push(chunk)
+
+      if (chunk.type === 'TEXT_MESSAGE_CONTENT' && chunk.delta) {
+        assistantText += chunk.delta
+      }
+
+      if (chunk.type === 'TOOL_CALL_END' && chunk.input !== undefined) {
+        toolInputs.set(chunk.toolCallId, chunk.input)
+      }
+
+      const toolResult = extractCompletedToolResult(chunk, toolInputs)
+      if (toolResult) {
+        completedToolResults.push(toolResult)
+      }
+
+      if (chunk.type === 'RUN_ERROR') {
+        hadRunError = true
+      }
+    }
+  } catch {
+    hadRunError = true
+  }
+
+  if (
+    !shouldRecoverBufferedSevereWeatherAnswer({
+      text: assistantText,
+      toolResults: completedToolResults,
+      hadRunError,
+    })
+  ) {
+    for (const chunk of bufferedChunks) {
+      yield chunk
+    }
+    return
+  }
+
+  const recoveryResults = await input.recoverToolResults(completedToolResults)
+  const fallbackText =
+    buildWeatherFallbackText([...completedToolResults, ...recoveryResults]) ??
+    buildSevereWeatherLimitationText(input.classification)
+
+  yield* streamBufferedWeatherReplacement({
+    bufferedChunks,
+    model: input.route.model,
+    replacementText: fallbackText,
+    recoveryResults,
+  })
+}
+
 function buildMiddleware(app: FastifyInstance) {
   return [
     toolCacheMiddleware({
@@ -752,7 +1018,30 @@ function collectAssistantArtifacts(
 
         artifacts.push(normalizeArtifactManifest(artifact))
       }
-      continue
+    }
+
+    const recommendedArtifacts = Array.isArray(result.recommendedArtifacts)
+      ? result.recommendedArtifacts
+      : []
+    for (const artifact of recommendedArtifacts) {
+      if (!artifact || typeof artifact !== 'object') {
+        continue
+      }
+
+      artifacts.push(normalizeArtifactManifest(artifact))
+    }
+
+    const evidenceArtifacts = Array.isArray(result.evidenceProducts)
+      ? result.evidenceProducts.flatMap((product: any) =>
+          Array.isArray(product?.artifactHandles) ? product.artifactHandles : [],
+        )
+      : []
+    for (const artifact of evidenceArtifacts) {
+      if (!artifact || typeof artifact !== 'object') {
+        continue
+      }
+
+      artifacts.push(normalizeArtifactManifest(artifact))
     }
 
     if ('artifactId' in result && 'href' in result) {
@@ -779,22 +1068,12 @@ function collectAssistantArtifacts(
   return [...deduped.values()]
 }
 
-function collectAssistantCitations(
+export function collectAssistantCitations(
   toolOutputs: Array<{ toolName: string; result: any }>,
 ) {
-  const preferredOutputs = toolOutputs.some(
-    (entry) =>
-      entry.toolName === 'synthesize_weather_conclusion' &&
-      Array.isArray(entry.result?.citations) &&
-      entry.result.citations.length > 0,
-  )
-    ? toolOutputs.filter(
-        (entry) => entry.toolName === 'synthesize_weather_conclusion',
-      )
-    : toolOutputs
   const citations: Array<Record<string, unknown>> = []
 
-  for (const entry of preferredOutputs) {
+  for (const entry of toolOutputs) {
     const result = entry.result
     if (Array.isArray(result)) {
       for (const item of result) {
@@ -804,6 +1083,23 @@ function collectAssistantCitations(
     }
 
     collectCitationLike(result, citations)
+    if (Array.isArray(result.evidenceProducts)) {
+      for (const evidence of result.evidenceProducts) {
+        if (evidence && typeof evidence === 'object') {
+          collectCitationLike(evidence, citations)
+          if (Array.isArray((evidence as any).provenance)) {
+            for (const provenance of (evidence as any).provenance) {
+              if (provenance && typeof provenance === 'object') {
+                const normalized = normalizeProvenanceCitation(provenance)
+                if (normalized) {
+                  citations.push(normalized)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   const deduped = new Map<string, Record<string, unknown>>()
@@ -811,11 +1107,19 @@ function collectAssistantCitations(
     const key =
       typeof citation.id === 'string'
         ? citation.id
-        : `${citation.sourceId ?? 'source'}:${citation.productId ?? 'product'}:${citation.url ?? ''}`
-    deduped.set(key, citation)
+        : `${citation.sourceId ?? 'source'}:${citation.productId ?? 'product'}:${citation.url ?? citation.contextUrl ?? citation.displayUrl ?? ''}:${citation.kind ?? 'page'}`
+    const existing = deduped.get(key)
+    if (!existing) {
+      deduped.set(key, citation)
+      continue
+    }
+
+    const preferred = compareCitations(citation, existing) < 0 ? citation : existing
+    const fallback = preferred === citation ? existing : citation
+    deduped.set(key, mergeCitation(preferred, fallback))
   }
 
-  return [...deduped.values()]
+  return [...deduped.values()].sort(compareCitations)
 }
 
 function collectCitationLike(
@@ -829,14 +1133,169 @@ function collectCitationLike(
   if (Array.isArray((value as any).citations)) {
     for (const citation of (value as any).citations) {
       if (citation && typeof citation === 'object') {
-        citations.push(citation as Record<string, unknown>)
+        const normalized = normalizeCitationLike(citation as Record<string, unknown>)
+        if (normalized) {
+          citations.push(normalized)
+        }
       }
     }
   }
 
   const source = (value as any).source
   if (source && typeof source === 'object') {
-    citations.push(source as Record<string, unknown>)
+    const normalized = normalizeCitationLike(source as Record<string, unknown>)
+    if (normalized) {
+      citations.push(normalized)
+    }
+  }
+}
+
+const citationKindPriority: Record<Citation['kind'], number> = {
+  image: 0,
+  dataset: 1,
+  api: 2,
+  page: 3,
+  artifact: 4,
+  derived: 5,
+}
+
+function citationKindRank(citation: Record<string, unknown>) {
+  const kind =
+    typeof citation.kind === 'string' &&
+    citation.kind in citationKindPriority
+      ? (citation.kind as Citation['kind'])
+      : 'page'
+  return citationKindPriority[kind]
+}
+
+function citationSortLabel(citation: Record<string, unknown>) {
+  return typeof citation.label === 'string'
+    ? citation.label.toLowerCase()
+    : String(citation.sourceId ?? 'source').toLowerCase()
+}
+
+function compareCitations(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+) {
+  const rankDiff = citationKindRank(left) - citationKindRank(right)
+  if (rankDiff !== 0) {
+    return rankDiff
+  }
+
+  return citationSortLabel(left).localeCompare(citationSortLabel(right))
+}
+
+function normalizeCitationLike(
+  citation: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const kind =
+    typeof citation.kind === 'string' &&
+    citation.kind in citationKindPriority
+      ? citation.kind
+      : 'page'
+  if (kind === 'derived') {
+    return null
+  }
+
+  const url = typeof citation.url === 'string' ? citation.url : undefined
+  const contextUrl =
+    typeof citation.contextUrl === 'string' ? citation.contextUrl : undefined
+  const displayUrl =
+    typeof citation.displayUrl === 'string' ? citation.displayUrl : undefined
+  if (!url && !contextUrl && !displayUrl) {
+    return null
+  }
+
+  return {
+    ...(citation as Record<string, unknown>),
+    kind,
+    url,
+    contextUrl,
+    displayUrl,
+  }
+}
+
+function normalizeProvenanceCitation(
+  provenance: Record<string, unknown>,
+): Record<string, unknown> | null {
+  return normalizeCitationLike({
+    id:
+      typeof provenance.id === 'string'
+        ? provenance.id
+        : `${provenance.sourceId ?? 'source'}:${provenance.productId ?? 'product'}`,
+    label:
+      typeof provenance.label === 'string'
+        ? provenance.label
+        : String(provenance.sourceId ?? 'Weather source'),
+    sourceId: String(provenance.sourceId ?? 'source'),
+    productId: String(provenance.productId ?? 'product'),
+    kind:
+      typeof provenance.kind === 'string'
+        ? provenance.kind
+        : 'page',
+    url: typeof provenance.url === 'string' ? provenance.url : undefined,
+    contextUrl:
+      typeof provenance.contextUrl === 'string'
+        ? provenance.contextUrl
+        : undefined,
+    displayUrl:
+      typeof provenance.displayUrl === 'string'
+        ? provenance.displayUrl
+        : undefined,
+    issuedAt:
+      typeof provenance.issuedAt === 'string'
+        ? provenance.issuedAt
+        : undefined,
+    validAt:
+      typeof provenance.validAt === 'string'
+        ? provenance.validAt
+        : undefined,
+  })
+}
+
+function mergeCitation(
+  preferred: Record<string, unknown>,
+  fallback: Record<string, unknown>,
+) {
+  return {
+    ...preferred,
+    displayUrl:
+      typeof preferred.displayUrl === 'string' && preferred.displayUrl
+        ? preferred.displayUrl
+        : typeof fallback.displayUrl === 'string'
+          ? fallback.displayUrl
+          : undefined,
+    url:
+      typeof preferred.url === 'string' && preferred.url
+        ? preferred.url
+        : typeof fallback.url === 'string'
+          ? fallback.url
+          : undefined,
+    contextUrl:
+      typeof preferred.contextUrl === 'string' && preferred.contextUrl
+        ? preferred.contextUrl
+        : typeof fallback.contextUrl === 'string'
+          ? fallback.contextUrl
+          : undefined,
+    issuedAt:
+      typeof preferred.issuedAt === 'string'
+        ? preferred.issuedAt
+        : typeof fallback.issuedAt === 'string'
+          ? fallback.issuedAt
+          : undefined,
+    validAt:
+      typeof preferred.validAt === 'string'
+        ? preferred.validAt
+        : typeof fallback.validAt === 'string'
+          ? fallback.validAt
+          : undefined,
+    note:
+      typeof preferred.note === 'string'
+        ? preferred.note
+        : typeof fallback.note === 'string'
+          ? fallback.note
+          : undefined,
   }
 }
 
@@ -850,6 +1309,14 @@ function toArtifactType(value: string) {
   }
   if (normalized.includes('report') || normalized.includes('brief')) {
     return 'report'
+  }
+  if (
+    normalized.includes('single-model-panel') ||
+    normalized.includes('hodograph') ||
+    normalized.includes('time-height') ||
+    normalized.includes('skewt')
+  ) {
+    return 'chart'
   }
   return 'chart'
 }
@@ -976,38 +1443,43 @@ export async function handleChatRequest(
 
   const adapter = await buildAdapter(app, route)
   const tools = buildServerTools(app, classification)
+  const providerTools =
+    route.provider === 'gemini' ? sanitizeToolsForGemini(tools) : tools
   const preparedMessages = prepareMessagesForProvider(
     body.messages,
     route.provider,
   )
   const systemPrompt = buildSystemPrompt(classification, body.locationOverride)
   const middleware = buildMiddleware(app)
-  const stream =
+  const recoverToolResults = (toolResults: Array<CompletedToolResult>) =>
+    recoverWeatherToolResults(app, classification, latestText, toolResults)
+  const baseStream =
     route.provider === 'gemini'
       ? streamGeminiWithToolContext({
           adapter,
           messages: preparedMessages,
-          tools,
+          tools: providerTools,
           systemPrompt,
           conversationId: body.conversationId,
           middleware,
-          recoverToolResults: (toolResults) =>
-            recoverWeatherToolResults(
-              app,
-              classification,
-              latestText,
-              toolResults,
-            ),
+          recoverToolResults,
         })
       : chat({
           adapter,
           messages: preparedMessages as any,
-          tools,
+          tools: providerTools,
           systemPrompts: [systemPrompt],
           conversationId: body.conversationId,
           middleware: middleware as any,
           agentLoopStrategy: maxIterations(8),
         })
+  const stream = streamValidatedSevereWeatherResponse({
+    stream: baseStream,
+    classification,
+    route,
+    latestText,
+    recoverToolResults,
+  })
 
   return {
     route,

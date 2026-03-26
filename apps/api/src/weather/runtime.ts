@@ -18,6 +18,9 @@ export type WeatherSourceTag = {
   productId: string
   label: string
   url: string
+  kind?: Citation['kind']
+  contextUrl?: string
+  displayUrl?: string
 }
 
 export type WeatherFetchTarget = WeatherSourceTag & {
@@ -41,6 +44,7 @@ export type WeatherProductCard = {
   sourceName: string
   summary: string
   url?: string
+  contextUrl?: string
   imageUrl?: string
   imageAlt?: string
   artifactId?: string
@@ -245,7 +249,10 @@ function sourceCitation(
     label: source.label,
     sourceId: source.sourceId,
     productId: source.productId,
+    kind: source.kind ?? 'page',
     url: source.url,
+    contextUrl: source.contextUrl,
+    displayUrl: source.displayUrl,
     issuedAt: retrievedAt,
     note,
   } satisfies Citation

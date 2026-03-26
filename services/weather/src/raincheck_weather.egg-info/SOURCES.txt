@@ -4,10 +4,12 @@ src/raincheck_weather/__init__.py
 src/raincheck_weather/app.py
 src/raincheck_weather/artifacts.py
 src/raincheck_weather/catalog.py
+src/raincheck_weather/derivations.py
 src/raincheck_weather/errors.py
 src/raincheck_weather/models.py
 src/raincheck_weather/nws.py
 src/raincheck_weather/settings.py
+src/raincheck_weather/synthesis.py
 src/raincheck_weather.egg-info/PKG-INFO
 src/raincheck_weather.egg-info/SOURCES.txt
 src/raincheck_weather.egg-info/dependency_links.txt
@@ -15,4 +17,5 @@ src/raincheck_weather.egg-info/requires.txt
 src/raincheck_weather.egg-info/top_level.txt
 tests/test_app.py
 tests/test_artifacts.py
+tests/test_derivations.py
 tests/test_nws_service.py

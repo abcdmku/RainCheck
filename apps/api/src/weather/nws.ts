@@ -82,6 +82,7 @@ function makeCitation(
     label,
     sourceId,
     productId,
+    kind: 'api',
     url,
   })
 }

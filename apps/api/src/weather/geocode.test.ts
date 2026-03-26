@@ -239,6 +239,42 @@ describe('geocodeQuery', () => {
     expect(geocoderUrl.searchParams.get('name')).toBe('Illinois')
   })
 
+  it('extracts colloquial "whats" chase prompts down to the intended place', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      jsonResponse({
+        results: [
+          {
+            name: 'Yorkville',
+            latitude: 41.64114,
+            longitude: -88.44729,
+            admin1: 'Illinois',
+            country: 'United States',
+            country_code: 'US',
+          },
+        ],
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const location = await geocodeQuery(
+      app,
+      'im in yorkville il whats the best plan to follow these upcoming storms to chase a tornado. what time and where should i start the chase',
+    )
+
+    expect(location).toMatchObject({
+      query: 'yorkville il',
+      name: 'Yorkville, Illinois, United States',
+      latitude: 41.64114,
+      longitude: -88.44729,
+      region: 'Illinois',
+      country: 'United States',
+      resolvedBy: 'open-meteo-geocoding',
+    })
+
+    const geocoderUrl = new URL(String(fetchMock.mock.calls[0]?.[0]))
+    expect(geocoderUrl.searchParams.get('name')).toBe('yorkville il')
+  })
+
   it('returns a location_resolution_failed error for upstream outages', async () => {
     const fetchMock = vi
       .fn()

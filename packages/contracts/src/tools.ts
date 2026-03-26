@@ -1,13 +1,19 @@
 import { toolDefinition } from '@tanstack/ai'
 import { z } from 'zod'
 
-import { weatherWorkflowSchema } from './base'
 import { locationContextSchema, userSettingsSchema } from './chat'
 import {
   citationBundleSchema,
+  derivationBundleSchema,
+  deriveGlobalRequestSchema,
+  deriveHydrologyRequestSchema,
+  deriveRadarNowcastRequestSchema,
+  deriveSatelliteRequestSchema,
+  deriveShortRangeRequestSchema,
   normalizedLocationSchema,
   reportOutlineSchema,
-  weatherConclusionSchema,
+  synthesisBundleSchema,
+  synthesizeWeatherRequestSchema,
   weatherToolEnvelopeSchema,
 } from './weather'
 
@@ -21,6 +27,9 @@ export const weatherArtifactTypeSchema = z.enum([
   'rainfall-chart',
   'snowfall-chart',
   'brief-report',
+  'single-model-panel',
+  'hodograph',
+  'time-height-chart',
 ])
 
 const weatherLocationQueryInputSchema = z.object({
@@ -54,22 +63,6 @@ const weatherArtifactRequestInputSchema = z.object({
   artifactType: weatherArtifactTypeSchema,
   locationQuery: z.string().trim().min(1),
   prompt: z.string().trim().min(1),
-})
-
-const weatherConclusionInputSchema = z.object({
-  userQuestion: z.string().trim().min(1),
-  workflow: weatherWorkflowSchema.optional(),
-  locationQuery: z.string().trim().min(1).optional(),
-  timeHorizonHours: z.number().int().min(0).max(720).optional(),
-  currentConditions: weatherToolEnvelopeSchema.optional(),
-  forecast: weatherToolEnvelopeSchema.optional(),
-  alerts: weatherToolEnvelopeSchema.optional(),
-  shortRangeGuidance: weatherToolEnvelopeSchema.optional(),
-  globalGuidance: weatherToolEnvelopeSchema.optional(),
-  severeContext: weatherToolEnvelopeSchema.optional(),
-  precipFloodContext: weatherToolEnvelopeSchema.optional(),
-  radarSatelliteNowcast: weatherToolEnvelopeSchema.optional(),
-  aviationContext: weatherToolEnvelopeSchema.optional(),
 })
 
 export const resolveLocationToolDef = toolDefinition({
@@ -107,20 +100,20 @@ export const getAlertsToolDef = toolDefinition({
   outputSchema: weatherToolEnvelopeSchema,
 })
 
-export const getShortRangeGuidanceToolDef = toolDefinition({
-  name: 'get_short_range_guidance',
+export const deriveShortRangeWeatherToolDef = toolDefinition({
+  name: 'derive_short_range_weather',
   description:
-    'Fetch short-range guidance for 0 to 48 hour questions using HRRR, RAP, NAM, NAM Nest, HREF, NBM, RTMA, and URMA context.',
-  inputSchema: weatherLocationQueryWindowInputSchema,
-  outputSchema: weatherToolEnvelopeSchema,
+    'Derive short-range weather evidence from HRRR, RAP, NAM, NAM Nest, HREF, NBM, RTMA, URMA, and supporting official severe context.',
+  inputSchema: deriveShortRangeRequestSchema,
+  outputSchema: derivationBundleSchema,
 })
 
-export const getGlobalGuidanceToolDef = toolDefinition({
-  name: 'get_global_guidance',
+export const deriveGlobalWeatherToolDef = toolDefinition({
+  name: 'derive_global_weather',
   description:
-    'Fetch 2 to 10 day synoptic guidance using GFS, GEFS, and ECMWF open-data context. Use "United States" for national questions.',
-  inputSchema: nationalWeatherLocationQueryWindowInputSchema,
-  outputSchema: weatherToolEnvelopeSchema,
+    'Derive global-pattern weather evidence from GFS, GEFS, IFS, AIFS, and supporting medium-range official context.',
+  inputSchema: deriveGlobalRequestSchema,
+  outputSchema: derivationBundleSchema,
 })
 
 export const getSevereContextToolDef = toolDefinition({
@@ -138,12 +131,12 @@ export const getFireWeatherProductsToolDef = toolDefinition({
   outputSchema: weatherToolEnvelopeSchema,
 })
 
-export const getPrecipFloodContextToolDef = toolDefinition({
-  name: 'get_precip_flood_context',
+export const deriveHydrologyWeatherToolDef = toolDefinition({
+  name: 'derive_hydrology_weather',
   description:
-    'Fetch rainfall, excessive rainfall, flash-flood, and river-stage context using WPC QPF/ERO and NWPS hydrology products.',
-  inputSchema: weatherLocationQueryWindowInputSchema,
-  outputSchema: weatherToolEnvelopeSchema,
+    'Derive hydrology and flood evidence using NWPS, NWM, WPC QPF/ERO, and supporting observational context.',
+  inputSchema: deriveHydrologyRequestSchema,
+  outputSchema: derivationBundleSchema,
 })
 
 export const getWpcWinterWeatherToolDef = toolDefinition({
@@ -162,12 +155,20 @@ export const getWpcMediumRangeHazardsToolDef = toolDefinition({
   outputSchema: weatherToolEnvelopeSchema,
 })
 
-export const getRadarSatelliteNowcastToolDef = toolDefinition({
-  name: 'get_radar_satellite_nowcast',
+export const deriveRadarNowcastToolDef = toolDefinition({
+  name: 'derive_radar_nowcast',
   description:
-    'Fetch current storm structure and near-term evolution context using NEXRAD, GOES, and MRMS.',
-  inputSchema: weatherLocationQueryProductInputSchema,
-  outputSchema: weatherToolEnvelopeSchema,
+    'Derive storm-scale radar and MRMS evidence for active or near-term weather questions.',
+  inputSchema: deriveRadarNowcastRequestSchema,
+  outputSchema: derivationBundleSchema,
+})
+
+export const deriveSatelliteWeatherToolDef = toolDefinition({
+  name: 'derive_satellite_weather',
+  description:
+    'Derive satellite and lightning evidence using GOES ABI and GLM products.',
+  inputSchema: deriveSatelliteRequestSchema,
+  outputSchema: derivationBundleSchema,
 })
 
 export const getAviationContextToolDef = toolDefinition({
@@ -221,9 +222,9 @@ export const getStormHistoryToolDef = toolDefinition({
 export const synthesizeWeatherConclusionToolDef = toolDefinition({
   name: 'synthesize_weather_conclusion',
   description:
-    'Synthesize fetched weather context into an expert conclusion with confidence, uncertainty, supporting signals, and recommended product cards.',
-  inputSchema: weatherConclusionInputSchema,
-  outputSchema: weatherConclusionSchema,
+    'Synthesize derived weather evidence into one expert judgment with confidence, uncertainty, supporting signals, bust risks, and recommended cards or artifacts.',
+  inputSchema: synthesizeWeatherRequestSchema,
+  outputSchema: synthesisBundleSchema,
 })
 
 export const generateCitationBundleToolDef = toolDefinition({

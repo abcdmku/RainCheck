@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 import {
+  chaseGuidanceLevelSchema,
   providerIdSchema,
   taskClassSchema,
   unitSystemSchema,
@@ -53,12 +54,24 @@ export const conversationSchema = z.object({
 
 export type Conversation = z.infer<typeof conversationSchema>
 
+export const citationKindSchema = z.enum([
+  'api',
+  'page',
+  'image',
+  'dataset',
+  'artifact',
+  'derived',
+])
+
 export const citationSchema = z.object({
   id: z.string(),
   label: z.string(),
   sourceId: z.string(),
   productId: z.string(),
+  kind: citationKindSchema.default('page'),
   url: z.string().url().optional(),
+  contextUrl: z.string().url().optional(),
+  displayUrl: z.string().optional(),
   issuedAt: z.string().optional(),
   validAt: z.string().optional(),
   note: z.string().optional(),
@@ -123,6 +136,7 @@ export const requestClassificationSchema = z.object({
   timeHorizonHours: z.number().int().min(0).max(720),
   locationRequired: z.boolean(),
   needsArtifact: z.boolean(),
+  chaseGuidanceLevel: chaseGuidanceLevelSchema.default('analysis-only'),
 })
 
 export type RequestClassification = z.infer<typeof requestClassificationSchema>

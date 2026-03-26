@@ -332,6 +332,7 @@ function buildCitation(
     label,
     sourceId: 'spc',
     productId,
+    kind: 'page',
     url,
     issuedAt,
   } satisfies Citation

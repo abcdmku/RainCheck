@@ -9,6 +9,42 @@ from raincheck_weather.app import app
 client = TestClient(app)
 
 
+def _evidence_product() -> dict:
+    return {
+        "id": "hrrr-1",
+        "sourceFamily": "hrrr",
+        "sourceName": "HRRR",
+        "cycleTime": "2026-03-24T12:00:00Z",
+        "validTime": "2026-03-24T15:00:00Z",
+        "geometry": {
+            "type": "point",
+            "latitude": 35.4676,
+            "longitude": -97.5164,
+            "label": "Oklahoma City, OK",
+        },
+        "fieldName": "cape",
+        "fieldType": "derived_diagnostic",
+        "level": "surface",
+        "units": "J/kg",
+        "spatialResolution": "3 km",
+        "summary": "Instability favors scattered supercells.",
+        "summaryStats": {"cape": 2400.0},
+        "signalScore": 0.88,
+        "confidence": 0.84,
+        "provenance": [
+            {
+                "sourceId": "hrrr",
+                "productId": "hrrr-cape",
+                "label": "HRRR CAPE subset",
+                "retrievedAt": "2026-03-24T12:05:00Z",
+                "validAt": "2026-03-24T15:00:00Z",
+                "url": "https://example.com/hrrr-cape",
+            }
+        ],
+        "artifactHandles": [],
+    }
+
+
 @pytest.mark.parametrize(
     "route,payload,expected_mime,expected_fragment",
     [
@@ -129,6 +165,74 @@ client = TestClient(app)
             "image/svg+xml",
             "RainCheck Snowfall Chart",
         ),
+        (
+            "/artifacts/single-model-panel",
+            {
+                "artifactType": "single-model-panel",
+                "locationQuery": "Oklahoma City, OK",
+                "prompt": "Summarize the severe-weather evidence",
+                "evidenceProducts": [_evidence_product()],
+            },
+            "text/html",
+            "Single model panel",
+        ),
+        (
+            "/artifacts/hodograph",
+            {
+                "artifactType": "hodograph",
+                "locationQuery": "Norman, OK",
+                "prompt": "Storm-relative wind profile",
+                "soundingLevels": [
+                    {
+                        "pressureHpa": 1000.0,
+                        "windSpeedKt": 10.0,
+                        "windDirectionDeg": 160.0,
+                    },
+                    {
+                        "pressureHpa": 850.0,
+                        "windSpeedKt": 25.0,
+                        "windDirectionDeg": 190.0,
+                    },
+                    {
+                        "pressureHpa": 700.0,
+                        "windSpeedKt": 45.0,
+                        "windDirectionDeg": 220.0,
+                    },
+                ],
+            },
+            "image/svg+xml",
+            "RainCheck Hodograph",
+        ),
+        (
+            "/artifacts/time-height-chart",
+            {
+                "artifactType": "time-height-chart",
+                "locationQuery": "Norman, OK",
+                "prompt": "Wind and thermodynamic profile",
+                "soundingLevels": [
+                    {
+                        "pressureHpa": 1000.0,
+                        "temperatureC": 24.0,
+                        "dewpointC": 19.0,
+                        "windSpeedKt": 10.0,
+                    },
+                    {
+                        "pressureHpa": 850.0,
+                        "temperatureC": 18.0,
+                        "dewpointC": 11.0,
+                        "windSpeedKt": 24.0,
+                    },
+                    {
+                        "pressureHpa": 700.0,
+                        "temperatureC": 9.0,
+                        "dewpointC": 4.0,
+                        "windSpeedKt": 40.0,
+                    },
+                ],
+            },
+            "image/svg+xml",
+            "RainCheck Time-Height Chart",
+        ),
     ],
 )
 def test_generated_artifact_routes(
@@ -149,3 +253,38 @@ def test_generated_artifact_routes(
     assert body["artifactType"] == payload["artifactType"]
     assert (tmp_path / body["artifactId"]).exists()
     assert expected_fragment in (tmp_path / body["artifactId"]).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "route,payload",
+    [
+        (
+            "/artifacts/radar-loop",
+            {
+                "artifactType": "radar-loop",
+                "locationQuery": "Dallas, TX",
+                "prompt": "Storm evolution",
+            },
+        ),
+        (
+            "/artifacts/single-model-panel",
+            {
+                "artifactType": "single-model-panel",
+                "locationQuery": "Oklahoma City, OK",
+                "prompt": "Summarize the severe-weather evidence",
+            },
+        ),
+        (
+            "/artifacts/hodograph",
+            {
+                "artifactType": "hodograph",
+                "locationQuery": "Norman, OK",
+                "prompt": "Storm-relative wind profile",
+            },
+        ),
+    ],
+)
+def test_artifacts_require_real_inputs(route: str, payload: dict) -> None:
+    response = client.post(route, json=payload)
+
+    assert response.status_code == 422

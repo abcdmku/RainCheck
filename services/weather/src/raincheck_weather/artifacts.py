@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
-from .models import ArtifactRequest, ArtifactResponse, ChartPoint
+from .errors import ServiceError
+from .models import ArtifactRequest, ArtifactResponse, ChartPoint, ChartSeries
 from .settings import Settings
 
 
@@ -34,13 +36,56 @@ def _primary_points(payload: ArtifactRequest) -> list[ChartPoint]:
     if payload.chartSeries and payload.chartSeries[0].points:
         return payload.chartSeries[0].points
 
-    return [
-        ChartPoint(label="Now", value=62.0),
-        ChartPoint(label="+3h", value=65.0),
-        ChartPoint(label="+6h", value=64.0),
-        ChartPoint(label="+9h", value=60.0),
-        ChartPoint(label="+12h", value=57.0),
-    ]
+    raise ServiceError(
+        400,
+        "artifact_requires_real_inputs",
+        f"{payload.artifactType} requires explicit chart points or chart series.",
+    )
+
+
+def _report_sections(payload: ArtifactRequest) -> list[str]:
+    if payload.sections:
+        return payload.sections
+
+    if payload.evidenceProducts:
+        sections = [
+            f"{evidence.sourceName}: {evidence.summary}"
+            for evidence in payload.evidenceProducts[:4]
+        ]
+        if sections:
+            return sections
+
+    raise ServiceError(
+        400,
+        "artifact_requires_real_inputs",
+        f"{payload.artifactType} requires explicit sections or evidence products.",
+    )
+
+
+def _series_from_sounding_levels(payload: ArtifactRequest) -> list[ChartPoint]:
+    if not payload.soundingLevels:
+        raise ServiceError(
+            400,
+            "artifact_requires_real_inputs",
+            f"{payload.artifactType} requires explicit sounding levels.",
+        )
+
+    points: list[ChartPoint] = []
+    for level in payload.soundingLevels:
+        pressure = level.pressureHpa if hasattr(level, "pressureHpa") else level["pressureHpa"]
+        temperature = level.temperatureC if hasattr(level, "temperatureC") else level.get("temperatureC")
+        if temperature is None:
+            continue
+        points.append(ChartPoint(label=f"{pressure:.0f} hPa", value=temperature))
+
+    if not points:
+        raise ServiceError(
+            400,
+            "artifact_requires_real_inputs",
+            f"{payload.artifactType} requires temperature-bearing sounding levels.",
+        )
+
+    return points
 
 
 def _multi_line_svg(
@@ -125,6 +170,9 @@ def _bar_svg(
     *,
     bar_color: str,
 ) -> str:
+    if not points:
+        raise ServiceError(400, "artifact_requires_real_inputs", f"{title} requires explicit points.")
+
     values = _point_values(points)
     min_value = min(0.0, min(values))
     max_value = max(values)
@@ -193,11 +241,7 @@ def _html_page(title: str, body: str) -> str:
 
 
 def _build_report_body(payload: ArtifactRequest, created_at: datetime, *, brief: bool) -> str:
-    sections = payload.sections or (
-        ["Situation", "Near-term impacts", "Uncertainty"]
-        if brief
-        else ["Situation", "Official forecast baseline", "Hazards", "Uncertainty"]
-    )
+    sections = _report_sections(payload)
     section_html = "".join(f"<li>{escape(section)}</li>" for section in sections)
     title = "Brief weather report" if brief else "RainCheck research report"
     return f"""
@@ -205,6 +249,40 @@ def _build_report_body(payload: ArtifactRequest, created_at: datetime, *, brief:
       <h1>{escape(payload.display_location())}</h1>
       <p>Generated {created_at.isoformat()}</p>
       <p>{escape(payload.prompt)}</p>
+      <div class="panel">
+        <h2>Sections</h2>
+        <ul>{section_html}</ul>
+      </div>
+    """
+
+
+def _single_model_panel_body(payload: ArtifactRequest, created_at: datetime) -> str:
+    evidence_cards = []
+    for evidence in payload.evidenceProducts:
+        evidence_cards.append(
+            f"""
+            <div class="card">
+              <div class="frame">
+                <span class="label">{escape(evidence.sourceName)}</span>
+                <span class="muted">{escape(evidence.fieldType)}</span>
+              </div>
+              <p>{escape(evidence.summary)}</p>
+              <p class="muted">Signal {evidence.signalScore:.2f} | Confidence {evidence.confidence:.2f}</p>
+            </div>
+            """
+        )
+
+    sections = _report_sections(payload)
+    section_html = "".join(f"<li>{escape(section)}</li>" for section in sections)
+    return f"""
+      <div class="eyebrow">Single model panel</div>
+      <h1>{escape(payload.display_location())}</h1>
+      <p>Generated {created_at.isoformat()}</p>
+      <p>{escape(payload.prompt)}</p>
+      <div class="panel">
+        <h2>Evidence</h2>
+        <div class="grid">{''.join(evidence_cards)}</div>
+      </div>
       <div class="panel">
         <h2>Sections</h2>
         <ul>{section_html}</ul>
@@ -262,10 +340,13 @@ def _loop_storyboard(
 ) -> ArtifactResponse:
     created_at = _timestamp()
     artifact_id = _artifact_id(artifact_type, "html", created_at)
-    frames = payload.frames or [
-        {"label": "Frame 1", "description": payload.prompt},
-        {"label": "Frame 2", "description": payload.display_location()},
-    ]
+    frames = payload.frames
+    if not frames:
+        raise ServiceError(
+            400,
+            "artifact_requires_real_inputs",
+            f"{artifact_type} requires explicit frames.",
+        )
     frame_cards = []
     for index, frame in enumerate(frames, start=1):
         label = frame.label if hasattr(frame, "label") else frame["label"]
@@ -329,7 +410,14 @@ def generate_hydrograph(settings: Settings, payload: ArtifactRequest) -> Artifac
     if payload.chartSeries:
         series = [entry.points for entry in payload.chartSeries if entry.points]
         labels = [entry.label for entry in payload.chartSeries if entry.points]
-        colors = [entry.color or color for entry, color in zip(payload.chartSeries, ["#4cc9f0", "#79ddd0", "#ffd47a"], strict=False)]
+        colors = [
+            entry.color or color
+            for entry, color in zip(
+                payload.chartSeries,
+                ["#4cc9f0", "#79ddd0", "#ffd47a"],
+                strict=False,
+            )
+        ]
         fill_colors = colors
         svg = _multi_line_svg(
             "RainCheck Hydrograph",
@@ -394,17 +482,13 @@ def generate_snowfall_chart(settings: Settings, payload: ArtifactRequest) -> Art
 def generate_skewt(settings: Settings, payload: ArtifactRequest) -> ArtifactResponse:
     created_at = _timestamp()
     artifact_id = _artifact_id("skewt", "svg", created_at)
-    levels = payload.soundingLevels or []
+    levels = payload.soundingLevels
     if not levels:
-        levels = []
-        for index, point in enumerate(_primary_points(payload), start=1):
-            levels.append(
-                {
-                    "pressureHpa": 1000 - index * 100,
-                    "temperatureC": point.value,
-                    "dewpointC": point.value - 4.0,
-                }
-            )
+        raise ServiceError(
+            400,
+            "artifact_requires_real_inputs",
+            "skewt requires explicit sounding levels.",
+        )
 
     pressures = [level.pressureHpa if hasattr(level, "pressureHpa") else level["pressureHpa"] for level in levels]
     temps = [
@@ -463,6 +547,165 @@ def generate_skewt(settings: Settings, payload: ArtifactRequest) -> ArtifactResp
     )
 
 
+def generate_single_model_panel(
+    settings: Settings, payload: ArtifactRequest
+) -> ArtifactResponse:
+    created_at = _timestamp()
+    artifact_id = _artifact_id("single-model-panel", "html", created_at)
+    html = _html_page("RainCheck Single Model Panel", _single_model_panel_body(payload, created_at))
+    _write_file(settings.artifacts_dir, artifact_id, html)
+    return ArtifactResponse(
+        artifactId=artifact_id,
+        artifactType="single-model-panel",
+        title=f"Single model panel for {payload.display_location()}",
+        href=f"{settings.public_base_path}/{artifact_id}",
+        mimeType="text/html",
+        createdAt=created_at,
+    )
+
+
+def generate_hodograph(settings: Settings, payload: ArtifactRequest) -> ArtifactResponse:
+    created_at = _timestamp()
+    artifact_id = _artifact_id("hodograph", "svg", created_at)
+
+    if payload.chartSeries:
+        series = payload.chartSeries[0].points
+        if not series:
+            raise ServiceError(400, "artifact_requires_real_inputs", "hodograph requires non-empty series.")
+        points = series
+        values = [point.value for point in points]
+        x_min, x_max = min(values), max(values)
+        span = max(x_max - x_min, 1)
+        coords = []
+        for index, point in enumerate(points):
+            x = 110 + ((point.value - x_min) / span) * 500
+            y = 210 - index * 20
+            coords.append(f"{x:.1f},{y:.1f}")
+    else:
+        if not payload.soundingLevels:
+            raise ServiceError(
+                400,
+                "artifact_requires_real_inputs",
+                "hodograph requires chartSeries or soundingLevels.",
+            )
+        coords = []
+        x_vals: list[float] = []
+        y_vals: list[float] = []
+        for level in payload.soundingLevels:
+            speed = level.windSpeedKt
+            direction = level.windDirectionDeg
+            if speed is None or direction is None:
+                continue
+            radians = math.radians(direction)
+            u = -speed * math.sin(radians)
+            v = -speed * math.cos(radians)
+            x_vals.append(u)
+            y_vals.append(v)
+            coords.append((u, v))
+        if not coords:
+            raise ServiceError(
+                400,
+                "artifact_requires_real_inputs",
+                "hodograph requires wind speed and direction on sounding levels.",
+            )
+        x_min, x_max = min(x_vals), max(x_vals)
+        y_min, y_max = min(y_vals), max(y_vals)
+        x_span = max(x_max - x_min, 1)
+        y_span = max(y_max - y_min, 1)
+        coords = [
+            f"{110 + ((u - x_min) / x_span) * 500:.1f},{210 - ((v - y_min) / y_span) * 140:.1f}"
+            for u, v in coords
+        ]
+
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="720" height="280" viewBox="0 0 720 280">
+  <rect width="720" height="280" rx="24" fill="#091419" />
+  <text x="34" y="40" fill="#eef5f5" font-family="sans-serif" font-size="20">RainCheck Hodograph</text>
+  <text x="34" y="64" fill="#9cb0b4" font-family="sans-serif" font-size="13">{escape(payload.display_location())}</text>
+  <path d="M{' L'.join(coords)}" fill="none" stroke="#ffd47a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <circle cx="110" cy="210" r="5" fill="#79ddd0" />
+</svg>"""
+    _write_file(settings.artifacts_dir, artifact_id, svg)
+    return ArtifactResponse(
+        artifactId=artifact_id,
+        artifactType="hodograph",
+        title=f"Hodograph for {payload.display_location()}",
+        href=f"{settings.public_base_path}/{artifact_id}",
+        mimeType="image/svg+xml",
+        createdAt=created_at,
+    )
+
+
+def generate_time_height_chart(
+    settings: Settings, payload: ArtifactRequest
+) -> ArtifactResponse:
+    created_at = _timestamp()
+    artifact_id = _artifact_id("time-height-chart", "svg", created_at)
+
+    series = list(payload.chartSeries)
+    if not series and payload.soundingLevels:
+        temp_points: list[ChartPoint] = []
+        dew_points: list[ChartPoint] = []
+        wind_points: list[ChartPoint] = []
+        for level in payload.soundingLevels:
+            label = f"{level.pressureHpa:.0f} hPa"
+            if level.temperatureC is not None:
+                temp_points.append(ChartPoint(label=label, value=level.temperatureC))
+            if level.dewpointC is not None:
+                dew_points.append(ChartPoint(label=label, value=level.dewpointC))
+            if level.windSpeedKt is not None:
+                wind_points.append(ChartPoint(label=label, value=level.windSpeedKt))
+        series = [
+            entry
+            for entry in [
+                {"label": "Temperature", "points": temp_points, "color": "#79ddd0"},
+                {"label": "Dewpoint", "points": dew_points, "color": "#6b9cff"},
+                {"label": "Wind Speed", "points": wind_points, "color": "#ffd47a"},
+            ]
+            if entry["points"]
+        ]
+        if not series:
+            raise ServiceError(
+                400,
+                "artifact_requires_real_inputs",
+                "time-height-chart requires chartSeries or sounding levels with values.",
+            )
+        rendered_series = [
+            ChartSeries(
+                label=entry["label"],
+                points=entry["points"],
+                color=entry["color"],
+            )
+            for entry in series
+        ]
+    else:
+        if not series:
+            raise ServiceError(
+                400,
+                "artifact_requires_real_inputs",
+                "time-height-chart requires chartSeries or sounding levels.",
+            )
+        rendered_series = series
+
+    svg = _multi_line_svg(
+        "RainCheck Time-Height Chart",
+        payload.display_location(),
+        [entry.points for entry in rendered_series],
+        stroke_colors=[entry.color or color for entry, color in zip(rendered_series, ["#79ddd0", "#6b9cff", "#ffd47a"], strict=False)],
+        fill_colors=[entry.color or color for entry, color in zip(rendered_series, ["#79ddd0", "#6b9cff", "#ffd47a"], strict=False)],
+        series_labels=[entry.label for entry in rendered_series],
+        height=320,
+    )
+    _write_file(settings.artifacts_dir, artifact_id, svg)
+    return ArtifactResponse(
+        artifactId=artifact_id,
+        artifactType="time-height-chart",
+        title=f"Time-height chart for {payload.display_location()}",
+        href=f"{settings.public_base_path}/{artifact_id}",
+        mimeType="image/svg+xml",
+        createdAt=created_at,
+    )
+
+
 def generate_weather_artifact(
     settings: Settings, payload: ArtifactRequest
 ) -> ArtifactResponse:
@@ -471,6 +714,8 @@ def generate_weather_artifact(
             return generate_meteogram(settings, payload)
         case "research-report" | "brief-report":
             return generate_report(settings, payload)
+        case "single-model-panel":
+            return generate_single_model_panel(settings, payload)
         case "radar-loop":
             return generate_radar_loop(settings, payload)
         case "satellite-loop":
@@ -479,6 +724,10 @@ def generate_weather_artifact(
             return generate_hydrograph(settings, payload)
         case "skewt":
             return generate_skewt(settings, payload)
+        case "hodograph":
+            return generate_hodograph(settings, payload)
+        case "time-height-chart":
+            return generate_time_height_chart(settings, payload)
         case "rainfall-chart":
             return generate_rainfall_chart(settings, payload)
         case "snowfall-chart":

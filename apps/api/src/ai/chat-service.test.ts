@@ -6,7 +6,11 @@ import {
   getConversation,
   saveMessage,
 } from '../services/conversations-service'
-import { handleChatRequest, prepareMessagesForProvider } from './chat-service'
+import {
+  collectAssistantCitations,
+  handleChatRequest,
+  prepareMessagesForProvider,
+} from './chat-service'
 
 const requiredEnv = {
   NODE_ENV: 'test',
@@ -213,5 +217,134 @@ describe('handleChatRequest', () => {
 
     const persistedConversation = await getConversation(app, conversation.id)
     expect(persistedConversation?.messages).toHaveLength(2)
+  })
+})
+
+describe('collectAssistantCitations', () => {
+  it('keeps direct tool citations alongside synthesis citations and drops derived provenance', () => {
+    const citations = collectAssistantCitations([
+      {
+        toolName: 'derive_short_range_weather',
+        result: {
+          evidenceProducts: [
+            {
+              provenance: [
+                {
+                  sourceId: 'hrrr',
+                  productId: 'hrrr-storm-mode-heuristic',
+                  label:
+                    'HRRR | storm-mode-heuristic | cycle 2026-03-24 12Z | valid 2026-03-24 18Z | Oklahoma City, OK',
+                  kind: 'dataset',
+                  url: 'https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.20260324/conus/hrrr.t12z.wrfnatf06.grib2',
+                  displayUrl:
+                    'https://mag.ncep.noaa.gov/data/hrrr/12/hrrr_oklahoma_city_006.gif',
+                },
+                {
+                  sourceId: 'raincheck-derivation',
+                  productId: 'short-range-composite',
+                  label: 'Derived composite',
+                  kind: 'derived',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        toolName: 'synthesize_weather_conclusion',
+        result: {
+          citations: [
+            {
+              id: 'spc:spc-mesoscale-context',
+              label:
+                'SPC | mesoscale-context | cycle 2026-03-24 12Z | valid 2026-03-24 18Z | Oklahoma City, OK',
+              sourceId: 'spc',
+              productId: 'spc-mesoscale-context',
+              kind: 'page',
+              url: 'https://www.spc.noaa.gov/products/outlook/day1otlk.html',
+            },
+          ],
+        },
+      },
+    ])
+
+    expect(citations).toEqual([
+      expect.objectContaining({
+        sourceId: 'hrrr',
+        kind: 'dataset',
+        displayUrl:
+          'https://mag.ncep.noaa.gov/data/hrrr/12/hrrr_oklahoma_city_006.gif',
+      }),
+      expect.objectContaining({
+        sourceId: 'spc',
+        kind: 'page',
+      }),
+    ])
+    expect(citations.some((citation) => citation.kind === 'derived')).toBe(false)
+  })
+
+  it('uses contextUrl as a persisted fallback when a citation has no direct url', () => {
+    const citations = collectAssistantCitations([
+      {
+        toolName: 'derive_radar_nowcast',
+        result: {
+          citations: [
+            {
+              id: 'nexrad:nexrad-storm-structure',
+              label: 'NEXRAD storm structure',
+              sourceId: 'nexrad',
+              productId: 'nexrad-storm-structure',
+              kind: 'image',
+              contextUrl: 'https://radar.weather.gov/ridge/standard/CONUS_0.gif',
+            },
+          ],
+        },
+      },
+    ])
+
+    expect(citations).toEqual([
+      expect.objectContaining({
+        sourceId: 'nexrad',
+        contextUrl: 'https://radar.weather.gov/ridge/standard/CONUS_0.gif',
+      }),
+    ])
+  })
+
+  it('retains displayUrl when duplicate citations collapse together', () => {
+    const citations = collectAssistantCitations([
+      {
+        toolName: 'synthesize_weather_conclusion',
+        result: {
+          citations: [
+            {
+              id: 'nexrad:nexrad-loop',
+              label: 'NEXRAD loop',
+              sourceId: 'nexrad',
+              productId: 'nexrad-loop',
+              kind: 'image',
+              url: 'https://radar.weather.gov/ridge/standard/CONUS_loop.gif',
+              displayUrl:
+                '/api/artifacts/radar-loop-20260324-1200.html',
+            },
+            {
+              id: 'nexrad:nexrad-loop',
+              label: 'NEXRAD loop',
+              sourceId: 'nexrad',
+              productId: 'nexrad-loop',
+              kind: 'image',
+              url: 'https://radar.weather.gov/ridge/standard/CONUS_loop.gif',
+            },
+          ],
+        },
+      },
+    ])
+
+    expect(citations).toEqual([
+      expect.objectContaining({
+        sourceId: 'nexrad',
+        url: 'https://radar.weather.gov/ridge/standard/CONUS_loop.gif',
+        displayUrl: '/api/artifacts/radar-loop-20260324-1200.html',
+      }),
+    ])
   })
 })

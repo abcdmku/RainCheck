@@ -203,6 +203,7 @@ class NwsService:
         )
         citations = [
             CitationBundle(
+                id=f"nws:nws-observation:{observed_at.isoformat() if observed_at else 'unknown'}",
                 sourceId="nws",
                 productId="nws-observation",
                 label=f"NWS latest observation from {station_id or 'nearest station'}",
@@ -258,6 +259,7 @@ class NwsService:
         label = "NWS hourly forecast" if hourly else "NWS forecast"
         citations = [
             CitationBundle(
+                id=f"nws:{product_id}:{forecast[0].startTime.isoformat() if forecast else 'unknown'}",
                 sourceId="nws",
                 productId=product_id,
                 label=label,
@@ -297,6 +299,7 @@ class NwsService:
         ]
         citations = [
             CitationBundle(
+                id=f"nws:nws-alerts:{point_param}",
                 sourceId="nws",
                 productId="nws-alerts",
                 label="NWS active alerts",

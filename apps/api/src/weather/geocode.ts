@@ -107,7 +107,7 @@ const houseNumberPattern = /^\s*\d+\b/
 const geocodeTimeoutMs = 700
 
 const embeddedLocationPattern =
-  /\b(?:in|for|near|around|across|over|at|from)\s+(.+?)(?=\s+(?:where|what|when|why|how|because|according|based|today|tonight|tomorrow|this|next|should|could|would|can|will|need|needs|show|see|avoid|head|expect|best|most|risk|risks)\b|[?!.;]|$)/i
+  /\b(?:in|for|near|around|across|over|at|from)\s+(.+?)(?=\s+(?:where|where's|wheres|what|what's|whats|when|when's|whens|why|how|because|according|based|today|tonight|tomorrow|this|next|should|could|would|can|will|need|needs|show|see|avoid|head|expect|best|most|risk|risks)\b|[?!.;]|$)/i
 
 function normalizeMatchValue(value: string | undefined) {
   return value?.trim().toLowerCase().replace(/[.,]/g, '') ?? ''

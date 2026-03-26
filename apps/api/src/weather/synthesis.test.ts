@@ -62,7 +62,7 @@ function severeEnvelope() {
 }
 
 describe('synthesizeWeatherConclusion', () => {
-  it('turns severe chase questions into a severe-weather brief without chase routing language', () => {
+  it('turns severe chase questions into a supported starting corridor answer', () => {
     const result = synthesizeWeatherConclusion({
       userQuestion:
         'im in yorkville il whats the best plan to follow these upcoming storms to chase a tornado. what time and where should i start the chase',
@@ -71,15 +71,10 @@ describe('synthesizeWeatherConclusion', () => {
     })
 
     expect(result.bottomLine).toContain('From Yorkville')
-    expect(result.bottomLine.toLowerCase()).toContain(
-      'main severe-weather window',
-    )
-    expect(result.bottomLine.toLowerCase()).not.toContain('chase')
+    expect(result.bottomLine.toLowerCase()).toContain('start near')
+    expect(result.bottomLine.toLowerCase()).toContain('corridor')
     expect(result.mostLikelyScenario.toLowerCase()).toContain(
       '4 pm to 10 pm thursday local time',
-    )
-    expect(result.mostLikelyScenario.toLowerCase()).not.toContain(
-      'chase-worthy',
     )
     expect(result.confidence.level).toBe('medium')
   })
@@ -96,6 +91,45 @@ describe('synthesizeWeatherConclusion', () => {
       'official outlook and loop visuals',
     )
     expect(result.bottomLine.toLowerCase()).toContain('annotated chase map')
+  })
+
+  it('supports explicit town or corridor targeting when the question asks for it', () => {
+    const result = synthesizeWeatherConclusion({
+      userQuestion:
+        'Which town south of Yorkville is the best tornado target by 6 PM?',
+      workflow: 'severe-weather',
+      severeContext: severeEnvelope(),
+    })
+
+    expect(result.bottomLine.toLowerCase()).toContain(
+      'best-supported target right now',
+    )
+    expect(result.bottomLine.toLowerCase()).toContain('south of yorkville')
+  })
+
+  it('keeps broad regional severe targets from reading like the origin and target are the same place', () => {
+    const result = synthesizeWeatherConclusion({
+      userQuestion:
+        'where is the best spot to start chasing the storms today and what time should i get there',
+      workflow: 'severe-weather',
+      severeContext: {
+        ...severeEnvelope(),
+        location: {
+          query: 'Illinois',
+          name: 'Illinois, United States',
+          latitude: 40,
+          longitude: -89,
+          region: 'Illinois',
+          country: 'United States',
+          resolvedBy: 'open-meteo-geocoding',
+        },
+      },
+    })
+
+    expect(result.bottomLine).not.toContain('From Illinois')
+    expect(result.bottomLine).toContain(
+      'The best-supported starting corridor today is within Illinois',
+    )
   })
 
   it('keeps short-range model questions model-first even when nowcast context is available', () => {

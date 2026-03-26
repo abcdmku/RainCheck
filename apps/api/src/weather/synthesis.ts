@@ -1,5 +1,6 @@
 import {
   type Citation,
+  type ChaseGuidanceLevel,
   type WeatherWorkflow,
   weatherConclusionSchema,
 } from '@raincheck/contracts'
@@ -14,6 +15,7 @@ import { normalizeTimingLanguage } from './timing-language'
 type SynthesisInput = {
   userQuestion: string
   workflow?: WeatherWorkflow
+  chaseGuidanceLevel?: ChaseGuidanceLevel
   locationQuery?: string
   timeHorizonHours?: number
   currentConditions?: WeatherEnvelope<any>
@@ -25,6 +27,13 @@ type SynthesisInput = {
   precipFloodContext?: WeatherEnvelope<any>
   radarSatelliteNowcast?: WeatherEnvelope<any>
   aviationContext?: WeatherEnvelope<any>
+}
+
+const chaseGuidanceRanks: Record<ChaseGuidanceLevel, number> = {
+  'analysis-only': 0,
+  'general-target': 1,
+  'exact-target': 2,
+  'full-route': 3,
 }
 
 type PrimaryEnvelopeKey =
@@ -68,6 +77,117 @@ function isChaseQuestion(question: string) {
   return /\b(chase|tornado target|follow these storms|start the chase|best plan|where should i start|what time|when should i start)\b/i.test(
     question,
   )
+}
+
+function inferChaseGuidanceLevel(
+  input: SynthesisInput,
+): ChaseGuidanceLevel {
+  if (input.chaseGuidanceLevel) {
+    return input.chaseGuidanceLevel
+  }
+
+  const question = input.userQuestion.toLowerCase()
+  if (
+    /\b(full route|turn[- ]by[- ]turn|directions|route|roads|road[- ]by[- ]road|interception location|intercept directions)\b/i.test(
+      question,
+    )
+  ) {
+    return 'full-route'
+  }
+
+  if (
+    /\b(which town|what town|which corridor|best corridor|exact target|exact town|specific town|specific corridor|target town)\b/i.test(
+      question,
+    ) ||
+    /\b(?:town|corridor|county)\s+(?:north|south|east|west|northeast|northwest|southeast|southwest)\s+of\b/i.test(
+      question,
+    )
+  ) {
+    return 'exact-target'
+  }
+
+  if (isChaseQuestion(question)) {
+    return 'general-target'
+  }
+
+  return 'analysis-only'
+}
+
+function effectiveChaseGuidanceLevel(
+  requested: ChaseGuidanceLevel,
+  confidenceScore: number,
+) {
+  let level = requested
+
+  if (level === 'full-route' && confidenceScore < 0.78) {
+    level = 'exact-target'
+  }
+
+  if (
+    chaseGuidanceRanks[level] >= chaseGuidanceRanks['exact-target'] &&
+    confidenceScore < 0.68
+  ) {
+    level = 'general-target'
+  }
+
+  if (
+    chaseGuidanceRanks[level] >= chaseGuidanceRanks['general-target'] &&
+    confidenceScore < 0.56
+  ) {
+    level = 'analysis-only'
+  }
+
+  return level
+}
+
+function synthesisLocation(input: SynthesisInput) {
+  return (
+    input.severeContext?.location ??
+    input.shortRangeGuidance?.location ??
+    input.radarSatelliteNowcast?.location ??
+    input.forecast?.location ??
+    input.currentConditions?.location ??
+    input.alerts?.location ??
+    input.globalGuidance?.location ??
+    input.precipFloodContext?.location ??
+    input.aviationContext?.location
+  )
+}
+
+function isBroadRegionLocation(
+  input: SynthesisInput,
+  locationLabel: string,
+) {
+  const location = synthesisLocation(input)
+  const shortLocation = locationLabel.split(',')[0]?.trim().toLowerCase()
+  if (!location || !shortLocation) {
+    return false
+  }
+
+  const region = location.region?.trim().toLowerCase()
+  const country = location.country?.trim().toLowerCase()
+
+  return shortLocation === region || shortLocation === country
+}
+
+function targetLabel(input: SynthesisInput, locationLabel: string, level: ChaseGuidanceLevel) {
+  const shortLocation = locationLabel.split(',')[0]?.trim() || locationLabel
+  const directionalMatch = input.userQuestion.match(
+    /\b((?:north|south|east|west|northeast|northwest|southeast|southwest)(?:\s*(?:to|and)\s*(?:north|south|east|west|northeast|northwest|southeast|southwest))?\s+of\s+[a-z0-9 .,'-]+)\b/i,
+  )
+  if (directionalMatch?.[1]) {
+    return directionalMatch[1]
+  }
+
+  if (level === 'analysis-only') {
+    return `the broader ${locationLabel} corridor`
+  }
+
+  if (isBroadRegionLocation(input, locationLabel)) {
+    return `the better-supported corridor within ${shortLocation}`
+  }
+
+  return `the south to southwest corridor from ${shortLocation}`
 }
 
 function isMapVisualQuestion(question: string) {
@@ -136,6 +256,60 @@ function buildSevereBottomLine(input: SynthesisInput, locationLabel: string) {
   )
   const timing = extractTimingPhrase(severeSummary)
   const shortLocation = locationLabel.split(',')[0]?.trim() || locationLabel
+  const requestedGuidanceLevel = inferChaseGuidanceLevel(input)
+  const confidenceScore = adjustedConfidenceScore(
+    'severe-weather',
+    input,
+    averageConfidence(sortedEntries(input)),
+  )
+  const guidanceLevel = effectiveChaseGuidanceLevel(
+    requestedGuidanceLevel,
+    confidenceScore,
+  )
+  const target = targetLabel(input, locationLabel, guidanceLevel)
+  const broadRegion = isBroadRegionLocation(input, locationLabel)
+
+  if (guidanceLevel === 'full-route' && timing && broadRegion) {
+    return compactText(
+      `The best-supported route window is ${timing.toLowerCase()}, with the favored path staying inside ${shortLocation} until later nowcast trends tighten the corridor.`,
+      210,
+    )
+  }
+
+  if (guidanceLevel === 'full-route' && timing) {
+    return compactText(
+      `From ${shortLocation}, stage toward ${target} before ${timing.toLowerCase()} and keep your route parallel to the favored storm corridor once initiation starts.`,
+      210,
+    )
+  }
+
+  if (guidanceLevel === 'exact-target' && timing && broadRegion) {
+    return compactText(
+      `The best-supported target right now is within ${shortLocation} during ${timing.toLowerCase()}, but not pinned to one town yet.`,
+      210,
+    )
+  }
+
+  if (guidanceLevel === 'exact-target' && timing) {
+    return compactText(
+      `From ${shortLocation}, the best-supported target right now is ${target} during ${timing.toLowerCase()}.`,
+      210,
+    )
+  }
+
+  if (guidanceLevel === 'general-target' && timing && broadRegion) {
+    return compactText(
+      `The best-supported starting corridor today is within ${shortLocation} during ${timing.toLowerCase()}, and the exact storm corridor should stay flexible until later nowcast trends tighten it.`,
+      210,
+    )
+  }
+
+  if (guidanceLevel === 'general-target' && timing) {
+    return compactText(
+      `From ${shortLocation}, start near ${target} during ${timing.toLowerCase()} and keep the exact storm corridor flexible until later nowcast trends tighten it.`,
+      210,
+    )
+  }
 
   if (isMapVisualQuestion(input.userQuestion) && timing) {
     return compactText(
@@ -147,20 +321,6 @@ function buildSevereBottomLine(input: SynthesisInput, locationLabel: string) {
   if (isMapVisualQuestion(input.userQuestion)) {
     return compactText(
       `From ${shortLocation}, RainCheck can support the broader severe corridor with official outlook and loop visuals, but not an annotated go-here-at-this-time map.`,
-      210,
-    )
-  }
-
-  if (isChaseQuestion(input.userQuestion) && timing) {
-    return compactText(
-      `From ${shortLocation}, treat ${timing.toLowerCase()} as the main severe-weather window and keep the exact storm corridor flexible until later nowcast trends tighten it.`,
-      210,
-    )
-  }
-
-  if (isChaseQuestion(input.userQuestion)) {
-    return compactText(
-      `From ${shortLocation}, the best current call is to keep the broader severe corridor flexible until later short-range trends tighten the main hazard window.`,
       210,
     )
   }
@@ -178,6 +338,18 @@ function buildSevereMostLikelyScenario(
     200,
   )
   const timing = extractTimingPhrase(severeSummary)
+  const requestedGuidanceLevel = inferChaseGuidanceLevel(input)
+  const confidenceScore = adjustedConfidenceScore(
+    'severe-weather',
+    input,
+    averageConfidence(sortedEntries(input)),
+  )
+  const guidanceLevel = effectiveChaseGuidanceLevel(
+    requestedGuidanceLevel,
+    confidenceScore,
+  )
+  const target = targetLabel(input, locationLabel, guidanceLevel)
+  const broadRegion = isBroadRegionLocation(input, locationLabel)
 
   if (isMapVisualQuestion(input.userQuestion) && timing) {
     return compactText(
@@ -193,16 +365,44 @@ function buildSevereMostLikelyScenario(
     )
   }
 
-  if (isChaseQuestion(input.userQuestion) && timing) {
+  if (guidanceLevel === 'full-route' && timing && broadRegion) {
     return compactText(
-      `The most likely outcome is storms becoming most organized from ${timing.toLowerCase()} onward, with tornado potential highest if cells stay discrete before clustering later.`,
+      `The main route window is ${timing.toLowerCase()}, with the favored path staying inside ${locationLabel} until later nowcast trends support a narrower route.`,
       200,
     )
   }
 
-  if (isChaseQuestion(input.userQuestion)) {
+  if (guidanceLevel === 'full-route' && timing) {
     return compactText(
-      'The most likely outcome is organized severe storms developing later in the period, with the highest tornado risk tied to storms that stay discrete before clustering.',
+      `The main route window is ${timing.toLowerCase()}, with the favored path staying closest to ${target}; if storm mode gets messier, widen back to the broader ${locationLabel} area.`,
+      200,
+    )
+  }
+
+  if (guidanceLevel === 'exact-target' && timing && broadRegion) {
+    return compactText(
+      `The main target window is ${timing.toLowerCase()}, with the favored corridor still broad enough inside ${locationLabel} that later mesoscale trends should narrow the exact target.`,
+      200,
+    )
+  }
+
+  if (guidanceLevel === 'exact-target' && timing) {
+    return compactText(
+      `The main target window is ${timing.toLowerCase()}, with ${target} offering the best chance to stay near discrete storms before clustering later.`,
+      200,
+    )
+  }
+
+  if (guidanceLevel === 'general-target' && timing && broadRegion) {
+    return compactText(
+      `The main chase start window is ${timing.toLowerCase()}, with the favored area still broad inside ${locationLabel}; if storms cluster early, wait for later nowcast trends to tighten the exact corridor.`,
+      200,
+    )
+  }
+
+  if (guidanceLevel === 'general-target' && timing) {
+    return compactText(
+      `The main chase start window is ${timing.toLowerCase()}, with the favored starting corridor centered on ${target}; if storms cluster early, widen back to the broader ${locationLabel} corridor.`,
       200,
     )
   }

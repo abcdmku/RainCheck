@@ -3,6 +3,13 @@ import {
   requestClassificationSchema,
 } from '@raincheck/contracts'
 
+const chaseGuidanceRanks = {
+  'analysis-only': 0,
+  'general-target': 1,
+  'exact-target': 2,
+  'full-route': 3,
+} as const
+
 function includesAny(input: string, terms: Array<string>) {
   return terms.some((term) => input.includes(term))
 }
@@ -170,6 +177,59 @@ const severeTerms = [
   'chase target',
 ]
 
+const chaseContextTerms = [
+  'chase',
+  'target',
+  'intercept',
+  'storm chasing',
+  'storm chase',
+]
+
+const generalTargetTerms = [
+  'where should i start',
+  'where should i head',
+  'what time and where',
+  'what time should i get there',
+  'what time should i start',
+  'when should i start',
+  'best plan',
+  'best target',
+  'best spot to start chasing',
+  'best place to start chasing',
+  'start the chase',
+  'follow these storms',
+  'where should i go',
+  'where should i be',
+  'when should i be there',
+  'start from',
+]
+
+const exactTargetTerms = [
+  'which town',
+  'what town',
+  'which corridor',
+  'best corridor',
+  'exact target',
+  'exact town',
+  'specific town',
+  'specific corridor',
+  'target town',
+]
+
+const fullRouteTerms = [
+  'full route',
+  'turn by turn',
+  'turn-by-turn',
+  'directions',
+  'route',
+  'roads',
+  'road by road',
+  'road-by-road',
+  'interception location',
+  'intercept directions',
+  'intercept route',
+]
+
 const shortRangeModelTerms = [
   'hrrr',
   'rap',
@@ -234,6 +294,13 @@ const broadStormLocatorTerms = [
   'where will the most severe storms be',
   'best storms happening',
   'most severe storms happening',
+  'where is the best spot to start chasing',
+  'best spot to start chasing',
+  'best place to start chasing',
+  'best spot to chase storms',
+  'best place to chase storms',
+  'best spot for storms',
+  'best place for storms',
 ]
 
 const conversationFollowUpTerms = [
@@ -372,6 +439,7 @@ function buildClassification(
     needsArtifact?: boolean
     timeHorizonHours?: number
     locationRequired?: boolean
+    chaseGuidanceLevel?: RequestClassification['chaseGuidanceLevel']
   } = {},
 ): RequestClassification {
   const researchRequested = includesAny(input, researchTerms)
@@ -401,6 +469,19 @@ function buildClassification(
       ? 'research'
       : 'chat'
   const taskClass = options.taskClass ?? defaultTaskClass
+  const shouldInferChaseGuidanceLevel =
+    includesSevereSignal(input) ||
+    includesAny(input, [
+      ...chaseContextTerms,
+      ...generalTargetTerms,
+      ...exactTargetTerms,
+      ...fullRouteTerms,
+    ])
+  const chaseGuidanceLevel =
+    options.chaseGuidanceLevel ??
+    (shouldInferChaseGuidanceLevel
+      ? inferChaseGuidanceLevel(input)
+      : 'analysis-only')
 
   return requestClassificationSchema.parse({
     taskClass,
@@ -408,7 +489,70 @@ function buildClassification(
     timeHorizonHours: options.timeHorizonHours ?? inferTimeHorizonHours(input),
     locationRequired: options.locationRequired ?? true,
     needsArtifact,
+    chaseGuidanceLevel,
   })
+}
+
+function inferChaseGuidanceLevel(
+  input: string,
+): RequestClassification['chaseGuidanceLevel'] {
+  if (
+    includesAny(input, fullRouteTerms) ||
+    /\b(?:take|use|follow)\s+(?:i-\d+|us-\d+|highway|route|roads?)\b/.test(input)
+  ) {
+    return 'full-route'
+  }
+
+  if (
+    includesAny(input, exactTargetTerms) ||
+    /\b(?:town|corridor|county)\s+(?:north|south|east|west|northeast|northwest|southeast|southwest)\s+of\b/.test(
+      input,
+    ) ||
+    /\bexact\b.*\b(?:target|town|corridor)\b/.test(input)
+  ) {
+    return 'exact-target'
+  }
+
+  if (
+    includesAny(input, generalTargetTerms) ||
+    (includesAny(input, chaseContextTerms) &&
+      includesAny(input, ['where', 'when', 'time', 'start', 'plan']))
+  ) {
+    return 'general-target'
+  }
+
+  return 'analysis-only'
+}
+
+function includesChaseSignal(input: string) {
+  if (includesAny(input, chaseContextTerms)) {
+    return true
+  }
+
+  if (
+    includesAny(input, generalTargetTerms) &&
+    includesAny(input, ['storm', 'storms', 'tornado', 'severe'])
+  ) {
+    return true
+  }
+
+  if (
+    includesAny(input, [...exactTargetTerms, ...fullRouteTerms]) &&
+    includesAny(input, ['chase', 'intercept', 'storm', 'storms', 'tornado'])
+  ) {
+    return true
+  }
+
+  return false
+}
+
+function moreSpecificChaseGuidanceLevel(
+  previous: RequestClassification['chaseGuidanceLevel'],
+  next: RequestClassification['chaseGuidanceLevel'],
+): RequestClassification['chaseGuidanceLevel'] {
+  return chaseGuidanceRanks[next] > chaseGuidanceRanks[previous]
+    ? next
+    : previous
 }
 
 function includesSevereSignal(input: string) {
@@ -530,6 +674,10 @@ function mergeConversationContext(
       ? latestClassification.timeHorizonHours
       : previousClassification.timeHorizonHours,
     needsArtifact: previousClassification.needsArtifact || artifactRequested,
+    chaseGuidanceLevel: moreSpecificChaseGuidanceLevel(
+      previousClassification.chaseGuidanceLevel,
+      latestClassification.chaseGuidanceLevel,
+    ),
   })
 }
 
@@ -738,10 +886,18 @@ export function classifyRequest(message: string): RequestClassification {
 
   if (includesSevereSignal(normalized) || broadStormLocator) {
     return buildClassification('severe-weather', normalized, {
-      taskClass:
-        broadStormLocator || timeHorizonHours >= 72 ? 'research' : 'chat',
+      taskClass: 'research',
       timeHorizonHours,
       locationRequired: !broadStormLocator,
+      needsArtifact: artifactRequested,
+    })
+  }
+
+  if (includesChaseSignal(normalized)) {
+    return buildClassification('severe-weather', normalized, {
+      taskClass: 'research',
+      timeHorizonHours,
+      locationRequired: true,
       needsArtifact: artifactRequested,
     })
   }

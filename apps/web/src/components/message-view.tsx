@@ -15,6 +15,25 @@ type OpenableArtifact = {
   imageAlt?: string
 }
 
+type OpenableSource = {
+  title: string
+  displayUrl: string
+  rawUrl?: string
+  mimeType: string
+  imageAlt?: string
+}
+
+type CitationLike = Record<string, any> & {
+  id?: string
+  label?: string
+  sourceId?: string
+  productId?: string
+  url?: string
+  contextUrl?: string
+  displayUrl?: string
+  kind?: string
+}
+
 const previewTitleByTool: Record<string, string> = {
   get_aviation_context: 'Aviation Context',
   get_fire_weather_products: 'Fire Weather',
@@ -131,7 +150,75 @@ function inferMimeTypeFromUrl(url: string) {
     return 'image/webp'
   }
 
+  if (normalized.endsWith('.html') || normalized.endsWith('.htm')) {
+    return 'text/html'
+  }
+
+  if (normalized.endsWith('.php') || normalized.endsWith('.shtml')) {
+    return 'text/html'
+  }
+
   return 'image/jpeg'
+}
+
+const citationKindPriority: Record<string, number> = {
+  image: 0,
+  dataset: 1,
+  api: 2,
+  page: 3,
+  artifact: 4,
+}
+
+function getCitationKind(citation: CitationLike) {
+  return typeof citation.kind === 'string' &&
+    citation.kind in citationKindPriority
+    ? citation.kind
+    : 'api'
+}
+
+function getCitationPriority(citation: CitationLike) {
+  return citationKindPriority[getCitationKind(citation)] ?? 99
+}
+
+function getCitationHref(citation: CitationLike) {
+  if (typeof citation.url === 'string' && citation.url) {
+    return citation.url
+  }
+
+  if (typeof citation.contextUrl === 'string' && citation.contextUrl) {
+    return citation.contextUrl
+  }
+
+  return undefined
+}
+
+function getCitationDisplayHref(citation: CitationLike) {
+  if (typeof citation.displayUrl === 'string' && citation.displayUrl) {
+    return citation.displayUrl
+  }
+
+  return undefined
+}
+
+function isDerivedCitation(citation: CitationLike) {
+  return citation.kind === 'derived'
+}
+
+function normalizeCitations(citations: Array<any>) {
+  return citations
+    .filter((citation): citation is CitationLike => isRecord(citation))
+    .filter((citation) => !isDerivedCitation(citation))
+    .map((citation, index) => ({ citation, index }))
+    .sort((left, right) => {
+      const priorityDelta =
+        getCitationPriority(left.citation) - getCitationPriority(right.citation)
+      if (priorityDelta !== 0) {
+        return priorityDelta
+      }
+
+      return left.index - right.index
+    })
+    .map(({ citation }) => citation)
 }
 
 function collectProducts(
@@ -165,6 +252,35 @@ function findHighlightedProduct(output: Record<string, any>) {
     ) ??
     products[0]
   )
+}
+
+function getProductSourceHref(product: Record<string, any>) {
+  if (typeof product.url === 'string' && product.url) {
+    return product.url
+  }
+
+  if (typeof product.contextUrl === 'string' && product.contextUrl) {
+    return product.contextUrl
+  }
+
+  return undefined
+}
+
+function buildOpenableSource(citation: CitationLike): OpenableSource | null {
+  const displayUrl = getCitationDisplayHref(citation)
+  if (!displayUrl) {
+    return null
+  }
+
+  const title = citation.label ?? citation.sourceId ?? 'Source'
+
+  return {
+    title,
+    displayUrl,
+    rawUrl: getCitationHref(citation),
+    mimeType: inferMimeTypeFromUrl(displayUrl),
+    imageAlt: title,
+  }
 }
 
 function getPreviewTitle(partName: string, output: Record<string, any>) {
@@ -272,16 +388,16 @@ function getPreviewImageUrl(
 
 function getPreviewSourceUrl(output: Record<string, any>) {
   const highlightedProduct = findHighlightedProduct(output)
-  if (typeof highlightedProduct?.url === 'string') {
-    return highlightedProduct.url
+  const highlightedUrl = highlightedProduct
+    ? getProductSourceHref(highlightedProduct)
+    : undefined
+  if (highlightedUrl) {
+    return highlightedUrl
   }
 
-  const firstCitation = Array.isArray(output.citations)
-    ? output.citations.find(
-        (c: unknown) => isRecord(c) && typeof c.url === 'string',
-      )
-    : null
-  return firstCitation?.url ?? undefined
+  const firstCitation = normalizeCitations(Array.isArray(output.citations) ? output.citations : [])
+    .find((citation) => getCitationHref(citation))
+  return firstCitation ? getCitationHref(firstCitation) : undefined
 }
 
 function hasPreviewCard(output: Record<string, any>) {
@@ -290,21 +406,41 @@ function hasPreviewCard(output: Record<string, any>) {
   return Boolean(getPreviewImageUrl(output, artifact))
 }
 
-function SourceChipWrap({ citations }: { citations: Array<any> }) {
-  if (!citations.length) {
+function SourceChipWrap({
+  citations,
+  onOpenSource,
+}: {
+  citations: Array<any>
+  onOpenSource?: (source: OpenableSource) => void
+}) {
+  const visibleCitations = normalizeCitations(citations)
+
+  if (!visibleCitations.length) {
     return null
   }
 
   return (
     <div className="source-chip-wrap">
-      {citations.map((citation) => {
+      {visibleCitations.map((citation) => {
         const label = citation.label ?? citation.sourceId ?? 'Source'
-        if (citation.url) {
+        const displayHref = getCitationDisplayHref(citation)
+        const rawHref = getCitationHref(citation)
+        const href = onOpenSource ? displayHref ?? rawHref : rawHref ?? displayHref
+        if (href) {
+          const source = displayHref ? buildOpenableSource(citation) : null
           return (
             <a
               className="source-chip"
-              href={citation.url}
-              key={citation.id ?? `${label}-${citation.url}`}
+              href={href}
+              key={citation.id ?? `${label}-${href}`}
+              onClick={(event) => {
+                if (!source || !onOpenSource) {
+                  return
+                }
+
+                event.preventDefault()
+                onOpenSource(source)
+              }}
               rel="noreferrer"
               target="_blank"
             >
@@ -522,10 +658,17 @@ function AlertsCard({ output }: { output: Record<string, any> }) {
   )
 }
 
-function CollapsibleSources({ citations }: { citations: Array<any> }) {
+function CollapsibleSources({
+  citations,
+  onOpenSource,
+}: {
+  citations: Array<any>
+  onOpenSource?: (source: OpenableSource) => void
+}) {
   const [open, setOpen] = useState(false)
+  const visibleCitations = normalizeCitations(citations)
 
-  if (!citations.length) {
+  if (!visibleCitations.length) {
     return null
   }
 
@@ -536,35 +679,88 @@ function CollapsibleSources({ citations }: { citations: Array<any> }) {
         onClick={() => setOpen((prev) => !prev)}
         type="button"
       >
-        <span className="sources-collapse-count">{citations.length}</span>
+        <span className="sources-collapse-count">{visibleCitations.length}</span>
         <span>sources</span>
         <ChevronDown className="sources-collapse-chevron" size={14} />
       </button>
       {open ? (
         <div className="sources-collapse-body">
-          {citations.map((citation) => {
-            const label = citation.label ?? citation.sourceId ?? 'Source'
-            if (citation.url) {
-              return (
-                <a
-                  className="source-chip"
-                  href={citation.url}
-                  key={citation.id ?? `${label}-${citation.url}`}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  {label}
-                </a>
-              )
-            }
-            return (
-              <span className="source-chip" key={citation.id ?? label}>
-                {label}
-              </span>
-            )
-          })}
+          <SourceChipWrap citations={visibleCitations} onOpenSource={onOpenSource} />
         </div>
       ) : null}
+    </div>
+  )
+}
+
+function SourceViewerModal({
+  source,
+  onClose,
+}: {
+  source: OpenableSource | null
+  onClose: () => void
+}) {
+  if (!source) {
+    return null
+  }
+
+  const renderedUrl = resolveApiUrl(source.displayUrl)
+  const rawUrl = source.rawUrl ? resolveApiUrl(source.rawUrl) : undefined
+
+  return (
+    /* biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop closes the viewer when the backdrop itself is clicked */
+    <div
+      className="artifact-viewer-backdrop"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose()
+        }
+      }}
+      onKeyDown={(event) => {
+        if (
+          event.target === event.currentTarget &&
+          (event.key === 'Enter' || event.key === ' ' || event.key === 'Escape')
+        ) {
+          event.preventDefault()
+          onClose()
+        }
+      }}
+      role="presentation"
+      tabIndex={-1}
+    >
+      <div aria-modal="true" className="artifact-viewer-panel" role="dialog">
+        <div className="artifact-viewer-header">
+          <div>
+            <p className="sidebar-brand">{source.title}</p>
+            <p className="sidebar-caption">{source.mimeType}</p>
+            {rawUrl ? (
+              <a
+                className="sidebar-caption"
+                href={rawUrl}
+                rel="noreferrer"
+                target="_blank"
+              >
+                Raw source
+              </a>
+            ) : null}
+          </div>
+          <button className="ghost-icon-button" onClick={onClose} type="button">
+            <X size={18} />
+          </button>
+        </div>
+        {source.mimeType.includes('image') ? (
+          <img
+            alt={source.imageAlt ?? source.title}
+            className="artifact-media"
+            src={renderedUrl}
+          />
+        ) : (
+          <iframe
+            className="artifact-frame"
+            src={renderedUrl}
+            title={source.title}
+          />
+        )}
+      </div>
     </div>
   )
 }
@@ -704,9 +900,11 @@ function ErrorCard({
 function ToolOutput({
   part,
   onOpenArtifact,
+  onOpenSource,
 }: {
   part: any
   onOpenArtifact: (artifact: OpenableArtifact) => void
+  onOpenSource?: (source: OpenableSource) => void
 }) {
   if (shouldHideToolOutput(part.name)) {
     return null
@@ -731,7 +929,12 @@ function ToolOutput({
   }
 
   if (part.name === 'generate_citation_bundle') {
-    return <CollapsibleSources citations={part.output.citations ?? []} />
+    return (
+      <CollapsibleSources
+        citations={part.output.citations ?? []}
+        onOpenSource={onOpenSource}
+      />
+    )
   }
 
   if (part.name === 'synthesize_weather_conclusion') {
@@ -863,10 +1066,13 @@ export function MessageView({
   onOpenArtifact: (artifact: OpenableArtifact) => void
 }) {
   const [editing, setEditing] = useState(false)
+  const [activeSourceViewer, setActiveSourceViewer] =
+    useState<OpenableSource | null>(null)
   const text = getMessageText(message as any)
   const citations = Array.isArray((message as any).citations)
     ? ((message as any).citations as Array<any>)
     : []
+  const visibleCitations = normalizeCitations(citations)
   const visibleParts = message.parts.filter((part: any) =>
     part.type === 'tool-call'
       ? !shouldHideToolOutput(part.name) && !isWeatherConclusion(part.output)
@@ -903,12 +1109,16 @@ export function MessageView({
     !hasTools &&
     !isThinking &&
     !showLiveStatus &&
-    citations.length === 0
+    visibleCitations.length === 0
 
   const canCopy = hasText
   const canEdit = isUser && hasText
   const canRetry = isAssistant && isLastAssistant && !isStreaming
   const hasActions = canCopy || canEdit || canRetry
+
+  function openSourceViewer(source: OpenableSource) {
+    setActiveSourceViewer(source)
+  }
 
   const actionsRow = !editing && hasActions ? (
     <div className="message-actions">
@@ -950,9 +1160,10 @@ export function MessageView({
   }
 
   return (
-    <article className={isUser ? 'message-row is-user' : 'message-row'}>
-      <div className={isUser ? 'message-wrap is-user' : 'message-wrap'}>
-        <div className={isUser ? 'message-bubble is-user' : 'message-bubble'}>
+    <>
+      <article className={isUser ? 'message-row is-user' : 'message-row'}>
+        <div className={isUser ? 'message-wrap is-user' : 'message-wrap'}>
+          <div className={isUser ? 'message-bubble is-user' : 'message-bubble'}>
           {isUser && editing ? (
             <InlineEdit
               initialText={text}
@@ -1007,6 +1218,7 @@ export function MessageView({
                       <ToolOutput
                         key={part.id}
                         onOpenArtifact={onOpenArtifact}
+                        onOpenSource={openSourceViewer}
                         part={part}
                       />
                     )
@@ -1019,16 +1231,24 @@ export function MessageView({
                   <Streamdown>{text}</Streamdown>
                 </div>
               ) : null}
-              {isAssistant && citations.length > 0 && !hasToolCitations ? (
-                <CollapsibleSources citations={citations} />
+              {isAssistant && visibleCitations.length > 0 && !hasToolCitations ? (
+                <CollapsibleSources
+                  citations={visibleCitations}
+                  onOpenSource={openSourceViewer}
+                />
               ) : null}
-            </>
+              </>
           )}
-        </div>
+          </div>
 
-        {/* Actions always outside the bubble */}
-        {actionsRow}
-      </div>
-    </article>
+          {/* Actions always outside the bubble */}
+          {actionsRow}
+        </div>
+      </article>
+      <SourceViewerModal
+        onClose={() => setActiveSourceViewer(null)}
+        source={activeSourceViewer}
+      />
+    </>
   )
 }

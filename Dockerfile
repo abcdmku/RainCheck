@@ -45,7 +45,7 @@ COPY services/weather/README.md services/weather/pyproject.toml ./
 COPY services/weather/src ./src
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
-  && python -m pip install --no-cache-dir .
+  && python -m pip install --no-cache-dir ".[analysis]"
 
 EXPOSE 8000
 

@@ -12,6 +12,7 @@ function classification(
     timeHorizonHours: 240,
     locationRequired: true,
     needsArtifact: false,
+    chaseGuidanceLevel: 'analysis-only',
     ...overrides,
   }
 }
@@ -40,6 +41,28 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain(
       'Do not call request_geolocation_permission when the default location context already provides coordinates.',
     )
+  })
+
+  it('treats the selected location as travel origin for broad severe storm hunts', () => {
+    const prompt = buildSystemPrompt(
+      classification({
+        intent: 'severe-weather',
+        taskClass: 'research',
+        locationRequired: false,
+        chaseGuidanceLevel: 'general-target',
+      }),
+      {
+        label: 'Chicago, IL',
+        latitude: 41.8781,
+        longitude: -87.6298,
+      },
+    )
+
+    expect(prompt).toContain('travel-origin context')
+    expect(prompt).toContain(
+      'broader regional or national severe-weather locationQuery',
+    )
+    expect(prompt).not.toContain('use this exact location as the locationQuery')
   })
 
   it('falls back to device location or a follow-up question when no place is available', () => {
@@ -81,7 +104,7 @@ describe('buildSystemPrompt', () => {
       'Do not silently replace it with a representative city',
     )
     expect(prompt).toContain(
-      'Before the final answer for this workflow, call synthesize_weather_conclusion',
+      'prefer the high-level derive tools: derive_short_range_weather, derive_global_weather, derive_radar_nowcast, derive_satellite_weather, and derive_hydrology_weather',
     )
   })
 
@@ -91,17 +114,41 @@ describe('buildSystemPrompt', () => {
         intent: 'severe-weather',
         taskClass: 'research',
         needsArtifact: true,
+        chaseGuidanceLevel: 'general-target',
       }),
     )
 
     expect(prompt).toContain(
-      'Do not provide a chase route, exact intercept point, or go-here-at-this-time severe-weather itinerary.',
+      'Chase guidance level for this request: general-target.',
+    )
+    expect(prompt).toContain(
+      'You may give a starting corridor and a start time window for the chase.',
     )
     expect(prompt).toContain(
       'Prefer a single official map, radar loop, satellite loop, or brief artifact',
     )
     expect(prompt).toContain(
       'use the closest supported official visual instead',
+    )
+  })
+
+  it('allows route-level guidance only when the request explicitly asks for it', () => {
+    const prompt = buildSystemPrompt(
+      classification({
+        intent: 'severe-weather',
+        taskClass: 'research',
+        chaseGuidanceLevel: 'full-route',
+      }),
+    )
+
+    expect(prompt).toContain(
+      'Chase guidance level for this request: full-route.',
+    )
+    expect(prompt).toContain(
+      'route-level directions are allowed when the evidence supports them',
+    )
+    expect(prompt).toContain(
+      'step down to exact-target or general-target guidance instead of refusing',
     )
   })
 })

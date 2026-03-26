@@ -143,8 +143,12 @@ def test_health() -> None:
     body = response.json()
     assert body["ok"] is True
     assert "nws-forecast" in body["implementedProducts"]
+    assert "derive-short-range" in body["implementedProducts"]
     assert "brief-report" in body["artifactTypes"]
     assert "radar-loop" in body["artifactTypes"]
+    assert "single-model-panel" in body["artifactTypes"]
+    assert "hodograph" in body["artifactTypes"]
+    assert "time-height-chart" in body["artifactTypes"]
 
 
 def test_catalog() -> None:
@@ -154,10 +158,16 @@ def test_catalog() -> None:
     body = response.json()
     assert any(source["sourceId"] == "nws" for source in body["sources"])
     assert any(source["sourceId"] == "raincheck-artifacts" for source in body["sources"])
+    assert any(source["sourceId"] == "raincheck-derivation" for source in body["sources"])
     assert any(source["sourceId"] == "wpc" for source in body["sources"])
     assert any(source["sourceId"] == "nhc" for source in body["sources"])
     assert any(
         product["productId"] == "artifact-brief-report"
+        and product["sourceId"] == "raincheck-artifacts"
+        for product in body["products"]
+    )
+    assert any(
+        product["productId"] == "artifact-single-model-panel"
         and product["sourceId"] == "raincheck-artifacts"
         for product in body["products"]
     )

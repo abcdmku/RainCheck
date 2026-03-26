@@ -2,8 +2,12 @@ import { parseEnv } from '@raincheck/config'
 import type { FastifyInstance } from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { generateArtifact } from './service-client'
 import { clearWeatherCache } from './runtime'
+import {
+  deriveShortRangeWeather,
+  generateArtifact,
+  synthesizeWeatherConclusion,
+} from './service-client'
 
 const env = parseEnv({
   NODE_ENV: 'test',
@@ -36,32 +40,195 @@ function jsonResponse(body: unknown, status = 200) {
   })
 }
 
-describe('generateArtifact', () => {
+describe('weather service client', () => {
   afterEach(() => {
     clearWeatherCache()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
 
-  it('sends live forecast-derived chart points to the weather service meteogram endpoint', async () => {
-    let artifactRequestBody: any = null
+  it('posts high-level short-range derivation requests to the Python service', async () => {
+    let deriveRequestBody: any = null
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: any) => {
       const url = String(input)
 
-      if (url.startsWith('https://geocoding.geo.census.gov/')) {
+      if (url === 'http://localhost:8000/derive/short-range') {
+        deriveRequestBody = JSON.parse(String(init?.body ?? '{}'))
         return jsonResponse({
-          result: {
-            addressMatches: [
-              {
-                matchedAddress: 'Austin, TX',
-                coordinates: {
-                  x: -97.7431,
-                  y: 30.2672,
-                },
-              },
-            ],
+          workflow: 'severe-weather',
+          region: {
+            type: 'point',
+            location: {
+              query: 'Austin, TX',
+              name: 'Austin, Texas, United States',
+              latitude: 30.2672,
+              longitude: -97.7431,
+              resolvedBy: 'geocoded',
+            },
           },
+          analysisWindow: {
+            start: '2026-03-25T18:00:00Z',
+            end: '2026-03-25T22:00:00Z',
+            referenceTime: null,
+            recentHours: null,
+          },
+          evidenceProducts: [
+            {
+              id: 'evidence-1',
+              sourceFamily: 'hrrr',
+              sourceName: 'HRRR',
+              cycleTime: '2026-03-25T18:00:00Z',
+              validTime: '2026-03-25T21:00:00Z',
+              geometry: {
+                type: 'point',
+                latitude: 30.2672,
+                longitude: -97.7431,
+              },
+              fieldName: 'storm-mode',
+              fieldType: 'derived_diagnostic',
+              level: null,
+              units: 'categorical',
+              spatialResolution: null,
+              summary: 'HRRR supports a discrete supercell mode near the leading corridor.',
+              summaryStats: {},
+              signalScore: 0.76,
+              confidence: 0.72,
+              provenance: [],
+              artifactHandles: [],
+            },
+          ],
+          agreementSummary: 'HRRR and HREF support the same severe corridor.',
+          keyConflicts: [],
+          recommendedCards: [
+            {
+              id: 'card-1',
+              title: 'HRRR storm mode',
+              sourceId: 'hrrr',
+              sourceName: 'HRRR',
+              summary: 'HRRR keeps the leading storms discrete early in the window.',
+              imageUrl: null,
+              artifactId: null,
+              href: null,
+              mimeType: null,
+              relevance: 'primary',
+            },
+          ],
+          recommendedArtifacts: [],
+          sourcesUsed: ['hrrr', 'href'],
+          sourcesMissing: [],
         })
+      }
+
+      throw new Error(`Unexpected fetch URL: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await deriveShortRangeWeather(app, {
+      userQuestion: 'What is the storm mode by 00z?',
+      workflow: 'severe-weather',
+      domain: 'storm-mode',
+      region: {
+        type: 'point',
+        location: {
+          query: 'Austin, TX',
+          name: 'Austin, Texas, United States',
+          latitude: 30.2672,
+          longitude: -97.7431,
+          resolvedBy: 'geocoded',
+        },
+        radiusKm: 120,
+      },
+      timeWindow: {
+        start: '2026-03-25T18:00:00Z',
+        end: '2026-03-25T22:00:00Z',
+        recentHours: 4,
+      },
+      requestedArtifacts: [],
+      includeOfficialContext: true,
+      focus: 'storm mode',
+      variables: ['cape', 'shear'],
+    })
+
+    expect(deriveRequestBody).toMatchObject({
+      workflow: 'severe-weather',
+      domain: 'storm-mode',
+      focus: 'storm mode',
+      variables: ['cape', 'shear'],
+    })
+    expect(result.agreementSummary).toContain('HRRR and HREF')
+    expect(result.analysisWindow.referenceTime).toBeUndefined()
+    expect(result.analysisWindow.recentHours).toBeUndefined()
+    expect(result.evidenceProducts[0]?.level).toBeUndefined()
+    expect(result.evidenceProducts[0]?.spatialResolution).toBeUndefined()
+    expect(result.recommendedCards[0]?.imageUrl).toBeUndefined()
+  })
+
+  it('posts synthesis requests directly to the Python service', async () => {
+    let synthesisRequestBody: any = null
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: any) => {
+      const url = String(input)
+
+      if (url === 'http://localhost:8000/synthesize') {
+        synthesisRequestBody = JSON.parse(String(init?.body ?? '{}'))
+        return jsonResponse({
+          bottomLine: 'The best-supported call is a severe-weather window late today.',
+          mostLikelyScenario: 'Discrete storms remain the leading mode.',
+          alternateScenarios: [],
+          confidence: {
+            level: 'medium',
+            reason: 'Short-range and radar evidence agree.',
+          },
+          agreementSummary: 'Short-range and radar agree.',
+          keySupportingSignals: ['Short-range guidance favors a discrete mode.'],
+          keyConflicts: [],
+          bustRisks: [],
+          recommendedCards: [],
+          recommendedArtifacts: [],
+          citations: [],
+          evidenceProducts: [],
+        })
+      }
+
+      throw new Error(`Unexpected fetch URL: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await synthesizeWeatherConclusion(app, {
+      userQuestion: 'What is the most likely storm mode by 00z?',
+      workflow: 'severe-weather',
+      region: {
+        type: 'point',
+        location: {
+          query: 'Austin, TX',
+          name: 'Austin, Texas, United States',
+          latitude: 30.2672,
+          longitude: -97.7431,
+          resolvedBy: 'geocoded',
+        },
+        radiusKm: 120,
+      },
+      timeWindow: {
+        start: '2026-03-25T18:00:00Z',
+        end: '2026-03-25T22:00:00Z',
+        recentHours: 4,
+      },
+      evidenceProducts: [],
+      supportingBundles: [],
+    })
+
+    expect(synthesisRequestBody).toMatchObject({
+      workflow: 'severe-weather',
+      userQuestion: 'What is the most likely storm mode by 00z?',
+    })
+    expect(result.confidence.level).toBe('medium')
+  })
+
+  it('throws when the weather service rejects an artifact request instead of fabricating a fallback', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+
+      if (url === 'http://localhost:8000/health') {
+        return new Response(null, { status: 200 })
       }
 
       if (url === 'https://api.weather.gov/points/30.2672,-97.7431') {
@@ -93,68 +260,9 @@ describe('generateArtifact', () => {
                 shortForecast: 'Mostly Sunny',
                 detailedForecast: 'Mostly sunny and warm.',
               },
-              {
-                name: '+1 Hour',
-                startTime: '2026-03-24T13:00:00+00:00',
-                endTime: '2026-03-24T14:00:00+00:00',
-                temperature: 74,
-                temperatureUnit: 'F',
-                windSpeed: '10 mph',
-                windDirection: 'S',
-                shortForecast: 'Sunny',
-                detailedForecast: 'Sunny and breezy.',
-              },
             ],
           },
         })
-      }
-
-      if (url === 'http://localhost:8000/health') {
-        return new Response(null, { status: 200 })
-      }
-
-      if (url === 'http://localhost:8000/artifacts/meteogram') {
-        artifactRequestBody = JSON.parse(String(init?.body ?? '{}'))
-        return jsonResponse({
-          artifactId: 'meteogram-remote.svg',
-          title: 'Meteogram for Austin, TX',
-          href: '/api/artifacts/meteogram-remote.svg',
-          mimeType: 'image/svg+xml',
-        })
-      }
-
-      throw new Error(`Unexpected fetch URL: ${url}`)
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    const artifact = await generateArtifact(app, {
-      artifactType: 'meteogram',
-      locationQuery: 'Austin, TX',
-      prompt: 'Next 12 hours',
-    })
-
-    expect(artifact.artifactId).toBe('meteogram-remote.svg')
-    expect(artifactRequestBody).toMatchObject({
-      artifactType: 'meteogram',
-      prompt: 'Next 12 hours',
-      location: {
-        latitude: 30.2672,
-        longitude: -97.7431,
-        name: 'Austin, TX',
-      },
-    })
-    expect(artifactRequestBody.chartPoints).toEqual([
-      { label: 'This Hour', value: 72 },
-      { label: '+1 Hour', value: 74 },
-    ])
-  })
-
-  it('falls back to a local radar-loop artifact when the weather service does not support the type', async () => {
-    const fetchMock = vi.fn(async (input: string | URL | Request) => {
-      const url = String(input)
-
-      if (url === 'http://localhost:8000/health') {
-        return new Response(null, { status: 200 })
       }
 
       if (url === 'http://localhost:8000/artifacts/radar-loop') {
@@ -165,13 +273,14 @@ describe('generateArtifact', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    const artifact = await generateArtifact(app, {
-      artifactType: 'radar-loop',
-      locationQuery: 'Austin, TX',
-      prompt: 'Current storm structure',
-    })
-
-    expect(artifact.mimeType).toBe('text/html')
-    expect(artifact.title).toContain('Radar Loop')
+    await expect(
+      generateArtifact(app, {
+        artifactType: 'radar-loop',
+        locationQuery: 'Austin, TX',
+        prompt: 'Current storm structure',
+      }),
+    ).rejects.toThrow(
+      'Weather service request to /artifacts/radar-loop failed with status 404.',
+    )
   })
 })

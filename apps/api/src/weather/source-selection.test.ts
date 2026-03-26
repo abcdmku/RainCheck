@@ -10,6 +10,7 @@ describe('chooseSourceManifests', () => {
       timeHorizonHours: 6,
       locationRequired: true,
       needsArtifact: false,
+      chaseGuidanceLevel: 'analysis-only',
     })
 
     expect(sources[0]?.sourceId).toBe('weather-gov')
@@ -25,6 +26,7 @@ describe('chooseSourceManifests', () => {
       timeHorizonHours: 48,
       locationRequired: true,
       needsArtifact: true,
+      chaseGuidanceLevel: 'analysis-only',
     })
 
     expect(sources[0]?.sourceId).toBe('nwps')
@@ -39,6 +41,7 @@ describe('chooseSourceManifests', () => {
       timeHorizonHours: 48,
       locationRequired: true,
       needsArtifact: false,
+      chaseGuidanceLevel: 'analysis-only',
     })
 
     expect(sources[0]?.sourceId).toBe('nhc')
@@ -54,6 +57,7 @@ describe('chooseSourceManifests', () => {
       timeHorizonHours: 48,
       locationRequired: true,
       needsArtifact: false,
+      chaseGuidanceLevel: 'analysis-only',
     })
 
     expect(sources[0]?.sourceId).toBe('wpc-medium')

@@ -27,6 +27,7 @@ describe('classifyConversationRequest', () => {
       intent: 'severe-weather',
       locationRequired: true,
       needsArtifact: true,
+      chaseGuidanceLevel: 'general-target',
     })
   })
 
@@ -52,6 +53,7 @@ describe('classifyConversationRequest', () => {
       intent: 'severe-weather',
       locationRequired: false,
       needsArtifact: false,
+      chaseGuidanceLevel: 'analysis-only',
     })
     expect(classification.timeHorizonHours).toBe(48)
   })

@@ -16,7 +16,7 @@ vi.mock('@tanstack/ai', async () => {
   }
 })
 
-import { streamGeminiWithToolContext } from './chat-service'
+import { streamGeminiWithToolContext, streamValidatedSevereWeatherResponse } from './chat-service'
 
 async function* streamChunks(chunks: Array<any>) {
   for (const chunk of chunks) {
@@ -445,5 +445,216 @@ describe('streamGeminiWithToolContext', () => {
           ),
       ),
     ).toBe(true)
+  })
+})
+
+describe('streamValidatedSevereWeatherResponse', () => {
+  const severeClassification = {
+    taskClass: 'research',
+    intent: 'severe-weather',
+    timeHorizonHours: 6,
+    locationRequired: true,
+    needsArtifact: false,
+    chaseGuidanceLevel: 'general-target',
+  } as const
+
+  it('suppresses refusal-like chase answers and replaces them with recovered weather guidance', async () => {
+    const refusalText =
+      'I cannot provide guidance for storm chasing or intercepting tornadoes because these activities carry extreme risks to life and property.'
+    const streamed: Array<any> = []
+
+    for await (const chunk of streamValidatedSevereWeatherResponse({
+      stream: streamChunks([
+        {
+          type: 'RUN_STARTED',
+          runId: 'run-refusal',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+        },
+        {
+          type: 'TEXT_MESSAGE_START',
+          messageId: 'msg-refusal',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          role: 'assistant',
+        },
+        {
+          type: 'TEXT_MESSAGE_CONTENT',
+          messageId: 'msg-refusal',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          delta: refusalText,
+          content: refusalText,
+        },
+        {
+          type: 'TEXT_MESSAGE_END',
+          messageId: 'msg-refusal',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+        },
+        {
+          type: 'RUN_FINISHED',
+          runId: 'run-refusal',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 2,
+          finishReason: 'stop',
+        },
+      ]),
+      classification: severeClassification,
+      route: {
+        provider: 'gemini',
+        model: 'gemini-3.1-pro-preview',
+      },
+      latestText:
+        'im in yorkville il whats the best plan to follow these upcoming storms to chase a tornado. what time and where should i start the chase',
+      recoverToolResults: async () => [
+        {
+          toolCallId: 'recovery-synthesis',
+          toolName: 'synthesize_weather_conclusion',
+          result: {
+            bottomLine:
+              'From Yorkville, start near the Yorkville-to-Morris corridor during the late afternoon and adjust with radar trends before storms cluster farther east.',
+            confidence: {
+              level: 'medium',
+              reason:
+                'The severe corridor and timing window are supported, but the first tornadic supercell corridor can still wobble.',
+            },
+            mostLikelyScenario:
+              'The best chase window favors late afternoon into early evening with the first discrete storms west to southwest of Yorkville.',
+            agreementSummary:
+              'Short-range guidance and severe context agree on a late-afternoon to early-evening window.',
+            keyConflicts: [
+              'The first mature supercell corridor can still shift if boundaries move.',
+            ],
+            bustRisks: ['Storms could cluster faster than expected.'],
+            recommendedCards: [],
+            recommendedArtifacts: [],
+            citations: [],
+          },
+        },
+      ],
+    })) {
+      streamed.push(chunk)
+    }
+
+    const outputText = streamed
+      .filter((chunk) => chunk.type === 'TEXT_MESSAGE_CONTENT')
+      .map((chunk) => String(chunk.content ?? chunk.delta ?? ''))
+      .join('')
+
+    expect(outputText).toContain('From Yorkville, start near the Yorkville-to-Morris corridor')
+    expect(outputText).not.toContain(refusalText)
+    expect(
+      streamed.some(
+        (chunk) =>
+          chunk.type === 'TOOL_CALL_END' &&
+          chunk.toolName === 'synthesize_weather_conclusion',
+      ),
+    ).toBe(true)
+  })
+
+  it('passes through supported severe-weather answers without invoking recovery', async () => {
+    const recoverToolResults = vi.fn(async () => [])
+    const streamed: Array<any> = []
+
+    for await (const chunk of streamValidatedSevereWeatherResponse({
+      stream: streamChunks([
+        {
+          type: 'RUN_STARTED',
+          runId: 'run-pass',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+        },
+        {
+          type: 'TEXT_MESSAGE_START',
+          messageId: 'msg-pass',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          role: 'assistant',
+        },
+        {
+          type: 'TEXT_MESSAGE_CONTENT',
+          messageId: 'msg-pass',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          delta:
+            'From Yorkville, the best-supported call is to stage west to southwest of town for the late-afternoon window and stay flexible on the exact corridor.',
+          content:
+            'From Yorkville, the best-supported call is to stage west to southwest of town for the late-afternoon window and stay flexible on the exact corridor.',
+        },
+        {
+          type: 'TEXT_MESSAGE_END',
+          messageId: 'msg-pass',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+        },
+        {
+          type: 'RUN_FINISHED',
+          runId: 'run-pass',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 2,
+          finishReason: 'stop',
+        },
+      ]),
+      classification: severeClassification,
+      route: {
+        provider: 'gemini',
+        model: 'gemini-3.1-pro-preview',
+      },
+      latestText: 'What is the severe setup near Yorkville tonight?',
+      recoverToolResults,
+    })) {
+      streamed.push(chunk)
+    }
+
+    const outputText = streamed
+      .filter((chunk) => chunk.type === 'TEXT_MESSAGE_CONTENT')
+      .map((chunk) => String(chunk.content ?? chunk.delta ?? ''))
+      .join('')
+
+    expect(outputText).toContain('best-supported call is to stage west to southwest of town')
+    expect(recoverToolResults).not.toHaveBeenCalled()
+  })
+
+  it('falls back to a short data-limitation message when recovery cannot build a better answer', async () => {
+    const streamed: Array<any> = []
+
+    for await (const chunk of streamValidatedSevereWeatherResponse({
+      stream: streamChunks([
+        {
+          type: 'RUN_STARTED',
+          runId: 'run-empty',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+        },
+        {
+          type: 'RUN_FINISHED',
+          runId: 'run-empty',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 2,
+          finishReason: 'stop',
+        },
+      ]),
+      classification: severeClassification,
+      route: {
+        provider: 'gemini',
+        model: 'gemini-3.1-pro-preview',
+      },
+      latestText:
+        'im in yorkville il whats the best plan to follow these upcoming storms to chase a tornado. what time and where should i start the chase',
+      recoverToolResults: async () => [],
+    })) {
+      streamed.push(chunk)
+    }
+
+    const outputText = streamed
+      .filter((chunk) => chunk.type === 'TEXT_MESSAGE_CONTENT')
+      .map((chunk) => String(chunk.content ?? chunk.delta ?? ''))
+      .join('')
+
+    expect(outputText).toContain(
+      'RainCheck could not assemble enough live severe-weather evidence to support a starting chase corridor yet.',
+    )
+    expect(outputText).not.toContain('cannot provide guidance for storm chasing')
   })
 })

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
-import { citationSchema } from './chat'
+import { chaseGuidanceLevelSchema } from './base'
+import { citationKindSchema, citationSchema } from './chat'
 
 export const normalizedLocationSchema = z.object({
   query: z.string(),
@@ -89,6 +90,25 @@ export const weatherArtifactHandleSchema = z.object({
   mimeType: z.string(),
 })
 
+export const weatherRequestedArtifactSchema = z.object({
+  type: z.enum([
+    'meteogram',
+    'research-report',
+    'radar-loop',
+    'satellite-loop',
+    'hydrograph',
+    'skewt',
+    'rainfall-chart',
+    'snowfall-chart',
+    'brief-report',
+    'single-model-panel',
+    'hodograph',
+    'time-height-chart',
+  ]),
+  required: z.boolean().default(false),
+  maxFrames: z.number().int().min(1).max(36).optional(),
+})
+
 export const weatherPreviewFieldsSchema = z.object({
   thumbnailUrl: z.string().optional(),
   imageAlt: z.string().optional(),
@@ -101,6 +121,37 @@ export const weatherValidityRangeSchema = z.object({
   start: z.string(),
   end: z.string(),
 })
+
+export const weatherRegionSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('point'),
+    location: normalizedLocationSchema,
+    radiusKm: z.number().positive().max(800).default(80),
+  }),
+  z.object({
+    type: z.literal('bbox'),
+    west: z.number().min(-180).max(180),
+    south: z.number().min(-90).max(90),
+    east: z.number().min(-180).max(180),
+    north: z.number().min(-90).max(90),
+    label: z.string().optional(),
+  }),
+])
+
+export const weatherTimeWindowSchema = z
+  .object({
+    start: z.string(),
+    end: z.string(),
+    referenceTime: z.string().optional(),
+    recentHours: z.number().int().min(0).max(72).optional(),
+  })
+  .refine(
+    (value) => Date.parse(value.start) <= Date.parse(value.end),
+    {
+      message: 'weather time windows must start before they end',
+      path: ['start'],
+    },
+  )
 
 export const weatherUnitsSchema = z
   .object({
@@ -125,6 +176,7 @@ export const weatherProductCardSchema = z.object({
   sourceName: z.string(),
   summary: z.string(),
   url: z.string().optional(),
+  contextUrl: z.string().optional(),
   imageUrl: z.string().optional(),
   imageAlt: z.string().optional(),
   artifactId: z.string().optional(),
@@ -177,6 +229,162 @@ export const weatherConfidenceSchema = z.object({
   reason: z.string(),
 })
 
+export const resolvedWeatherRequestSchema = z.object({
+  userQuestion: z.string().trim().min(1),
+  workflow: z.string().trim().min(1),
+  region: weatherRegionSchema,
+  timeWindow: weatherTimeWindowSchema,
+  chaseGuidanceLevel: chaseGuidanceLevelSchema.default('analysis-only'),
+  focus: z.string().trim().min(1).optional(),
+  variables: z.array(z.string()).default([]),
+  requestedArtifacts: z.array(weatherRequestedArtifactSchema).default([]),
+  includeOfficialContext: z.boolean().default(true),
+})
+
+export const evidenceGeometrySchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('point'),
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    label: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal('bbox'),
+    west: z.number().min(-180).max(180),
+    south: z.number().min(-90).max(90),
+    east: z.number().min(-180).max(180),
+    north: z.number().min(-90).max(90),
+    label: z.string().optional(),
+  }),
+])
+
+export const evidenceProvenanceSchema = z.object({
+  sourceId: z.string(),
+  productId: z.string(),
+  label: z.string(),
+  kind: citationKindSchema.default('page'),
+  url: z.string().optional(),
+  contextUrl: z.string().optional(),
+  displayUrl: z.string().optional(),
+  retrievedAt: z.string(),
+  issuedAt: z.string().optional(),
+  validAt: z.string().optional(),
+  validRange: weatherValidityRangeSchema.optional(),
+  notes: z.array(z.string()).default([]),
+})
+
+export const evidenceProductSchema = z.object({
+  id: z.string(),
+  sourceFamily: z.string(),
+  sourceName: z.string(),
+  cycleTime: z.string().optional(),
+  validTime: z.string(),
+  geometry: evidenceGeometrySchema,
+  fieldName: z.string(),
+  fieldType: z.enum([
+    'raw_field',
+    'derived_diagnostic',
+    'probability',
+    'official_product',
+    'observation',
+  ]),
+  level: z.string().optional(),
+  units: z.string(),
+  spatialResolution: z.string().optional(),
+  summary: z.string(),
+  summaryStats: z.record(z.string(), z.union([z.number(), z.string()])).default(
+    {},
+  ),
+  signalScore: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1),
+  provenance: z.array(evidenceProvenanceSchema).default([]),
+  artifactHandles: z.array(weatherArtifactHandleSchema).default([]),
+})
+
+export const derivationBundleSchema = z.object({
+  workflow: z.string(),
+  region: weatherRegionSchema,
+  analysisWindow: weatherTimeWindowSchema,
+  evidenceProducts: z.array(evidenceProductSchema).default([]),
+  agreementSummary: z.string(),
+  keyConflicts: z.array(z.string()).default([]),
+  recommendedCards: z.array(weatherProductCardSchema).default([]),
+  recommendedArtifacts: z.array(weatherArtifactHandleSchema).default([]),
+  sourcesUsed: z.array(z.string()).default([]),
+  sourcesMissing: z.array(z.string()).default([]),
+})
+
+export const deriveShortRangeRequestSchema = resolvedWeatherRequestSchema.extend({
+  domain: z.enum([
+    'severe',
+    'convection',
+    'storm-mode',
+    'snow',
+    'ice',
+    'low-clouds',
+    'fog',
+    'temperature-gradient',
+  ]),
+})
+
+export const deriveGlobalRequestSchema = resolvedWeatherRequestSchema.extend({
+  domain: z.enum([
+    'pattern',
+    'severe-setup',
+    'winter',
+    'heavy-rain',
+    'temperature-anomaly',
+  ]),
+})
+
+export const deriveRadarNowcastRequestSchema =
+  resolvedWeatherRequestSchema.extend({
+    domain: z.enum([
+      'storm-objects',
+      'rotation',
+      'hail',
+      'wind',
+      'training-rain',
+      'precipitation',
+    ]),
+  })
+
+export const deriveSatelliteRequestSchema = resolvedWeatherRequestSchema.extend({
+  domain: z.enum([
+    'cloud-top',
+    'convective-initiation',
+    'moisture-plume',
+    'low-clouds',
+    'fog',
+    'lightning',
+  ]),
+})
+
+export const deriveHydrologyRequestSchema = resolvedWeatherRequestSchema.extend({
+  domain: z.enum([
+    'river-flood',
+    'flash-flood',
+    'peak-flow',
+    'hydro-timing',
+    'winter-hydrology',
+  ]),
+})
+
+export const synthesisBundleSchema = z.object({
+  bottomLine: z.string(),
+  mostLikelyScenario: z.string(),
+  alternateScenarios: z.array(z.string()).default([]),
+  confidence: weatherConfidenceSchema,
+  agreementSummary: z.string(),
+  keySupportingSignals: z.array(z.string()).default([]),
+  keyConflicts: z.array(z.string()).default([]),
+  bustRisks: z.array(z.string()).default([]),
+  recommendedCards: z.array(weatherProductCardSchema).default([]),
+  recommendedArtifacts: z.array(weatherArtifactHandleSchema).default([]),
+  citations: z.array(citationSchema).default([]),
+  evidenceProducts: z.array(evidenceProductSchema).default([]),
+})
+
 export const weatherConclusionSchema = z.object({
   bottomLine: z.string(),
   confidence: weatherConfidenceSchema,
@@ -189,6 +397,16 @@ export const weatherConclusionSchema = z.object({
   productCards: z.array(weatherProductCardSchema).default([]),
   citations: z.array(citationSchema).default([]),
   artifacts: z.array(weatherArtifactHandleSchema).default([]),
+})
+
+export const synthesizeWeatherRequestSchema = z.object({
+  userQuestion: z.string().trim().min(1),
+  workflow: z.string().trim().min(1),
+  region: weatherRegionSchema,
+  timeWindow: weatherTimeWindowSchema,
+  chaseGuidanceLevel: chaseGuidanceLevelSchema.default('analysis-only'),
+  evidenceProducts: z.array(evidenceProductSchema).default([]),
+  supportingBundles: z.array(derivationBundleSchema).default([]),
 })
 
 export const weatherToolEnvelopeSchema = z

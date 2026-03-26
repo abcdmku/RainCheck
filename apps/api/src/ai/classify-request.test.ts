@@ -115,6 +115,20 @@ describe('classifyRequest', () => {
     expect(classification.timeHorizonHours).toBe(72)
   })
 
+  it('treats broad chase locator questions as severe-weather research without forcing the current city as the target area', () => {
+    const classification = classifyRequest(
+      'where is the best spot to start chasing the storms today and what time should i get there',
+    )
+
+    expect(classification).toMatchObject({
+      taskClass: 'research',
+      intent: 'severe-weather',
+      locationRequired: false,
+      chaseGuidanceLevel: 'general-target',
+    })
+    expect(classification.timeHorizonHours).toBe(12)
+  })
+
   it('keeps HRRR tornado chase prompts in the severe-weather workflow', () => {
     const classification = classifyRequest(
       'in central IL where should i head and what time according to the HRRR model to see tornados',
@@ -125,7 +139,42 @@ describe('classifyRequest', () => {
       intent: 'severe-weather',
       locationRequired: true,
       needsArtifact: false,
+      chaseGuidanceLevel: 'general-target',
     })
     expect(classification.timeHorizonHours).toBe(6)
+  })
+
+  it('keeps broader severe setup prompts at analysis-only guidance', () => {
+    const classification = classifyRequest(
+      'What is the severe setup near Yorkville tonight?',
+    )
+
+    expect(classification).toMatchObject({
+      taskClass: 'research',
+      intent: 'severe-weather',
+      chaseGuidanceLevel: 'analysis-only',
+    })
+  })
+
+  it('escalates explicit town targets to exact-target guidance', () => {
+    const classification = classifyRequest(
+      'Which town south of Yorkville is the best tornado target by 6 PM?',
+    )
+
+    expect(classification).toMatchObject({
+      intent: 'severe-weather',
+      chaseGuidanceLevel: 'exact-target',
+    })
+  })
+
+  it('only allows full-route guidance for explicit route or direction prompts', () => {
+    const classification = classifyRequest(
+      'Give me a full chase route from Yorkville with intercept directions',
+    )
+
+    expect(classification).toMatchObject({
+      intent: 'severe-weather',
+      chaseGuidanceLevel: 'full-route',
+    })
   })
 })

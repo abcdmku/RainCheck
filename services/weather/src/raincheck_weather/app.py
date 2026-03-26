@@ -5,6 +5,13 @@ from fastapi.responses import JSONResponse
 
 from .artifacts import generate_weather_artifact
 from .catalog import build_catalog
+from .derivations import (
+    derive_global,
+    derive_hydrology,
+    derive_radar_nowcast,
+    derive_satellite,
+    derive_short_range,
+)
 from .errors import ServiceError
 from .models import (
     AlertsRequest,
@@ -14,15 +21,24 @@ from .models import (
     CatalogResponse,
     CurrentWeatherRequest,
     CurrentWeatherResponse,
+    DerivationBundle,
+    DeriveGlobalRequest,
+    DeriveHydrologyRequest,
+    DeriveRadarNowcastRequest,
+    DeriveSatelliteRequest,
+    DeriveShortRangeRequest,
     ErrorResponse,
     ForecastRequest,
     ForecastResponse,
     HealthResponse,
+    SynthesizeRequest,
+    SynthesisBundle,
     WeatherAnalysisRequest,
     WeatherAnalysisResponse,
 )
 from .nws import NwsService
 from .settings import Settings, load_settings
+from .synthesis import synthesize_weather
 
 app = FastAPI(title="RainCheck Weather Service", version="0.2.0")
 
@@ -88,6 +104,78 @@ async def weather_analysis(
     return await service.analyze(payload)
 
 
+@app.post(
+    "/derive/short-range",
+    response_model=DerivationBundle,
+    response_model_exclude_none=True,
+)
+async def derive_short_range_endpoint(
+    payload: DeriveShortRangeRequest,
+    settings: Settings = Depends(get_settings),
+) -> DerivationBundle:
+    return derive_short_range(settings, payload)
+
+
+@app.post(
+    "/derive/global",
+    response_model=DerivationBundle,
+    response_model_exclude_none=True,
+)
+async def derive_global_endpoint(
+    payload: DeriveGlobalRequest,
+    settings: Settings = Depends(get_settings),
+) -> DerivationBundle:
+    return derive_global(settings, payload)
+
+
+@app.post(
+    "/derive/radar-nowcast",
+    response_model=DerivationBundle,
+    response_model_exclude_none=True,
+)
+async def derive_radar_nowcast_endpoint(
+    payload: DeriveRadarNowcastRequest,
+    settings: Settings = Depends(get_settings),
+) -> DerivationBundle:
+    return derive_radar_nowcast(settings, payload)
+
+
+@app.post(
+    "/derive/satellite",
+    response_model=DerivationBundle,
+    response_model_exclude_none=True,
+)
+async def derive_satellite_endpoint(
+    payload: DeriveSatelliteRequest,
+    settings: Settings = Depends(get_settings),
+) -> DerivationBundle:
+    return derive_satellite(settings, payload)
+
+
+@app.post(
+    "/derive/hydrology",
+    response_model=DerivationBundle,
+    response_model_exclude_none=True,
+)
+async def derive_hydrology_endpoint(
+    payload: DeriveHydrologyRequest,
+    settings: Settings = Depends(get_settings),
+) -> DerivationBundle:
+    return derive_hydrology(settings, payload)
+
+
+@app.post(
+    "/synthesize",
+    response_model=SynthesisBundle,
+    response_model_exclude_none=True,
+)
+async def synthesize_endpoint(
+    payload: SynthesizeRequest,
+    settings: Settings = Depends(get_settings),
+) -> SynthesisBundle:
+    return synthesize_weather(settings, payload)
+
+
 @app.post("/artifacts/meteogram", response_model=ArtifactResponse)
 async def artifact_meteogram(
     payload: ArtifactRequest,
@@ -128,6 +216,14 @@ async def artifact_satellite_loop(
     return generate_weather_artifact(settings, payload)
 
 
+@app.post("/artifacts/single-model-panel", response_model=ArtifactResponse)
+async def artifact_single_model_panel(
+    payload: ArtifactRequest,
+    settings: Settings = Depends(get_settings),
+) -> ArtifactResponse:
+    return generate_weather_artifact(settings, payload)
+
+
 @app.post("/artifacts/hydrograph", response_model=ArtifactResponse)
 async def artifact_hydrograph(
     payload: ArtifactRequest,
@@ -138,6 +234,22 @@ async def artifact_hydrograph(
 
 @app.post("/artifacts/skewt", response_model=ArtifactResponse)
 async def artifact_skewt(
+    payload: ArtifactRequest,
+    settings: Settings = Depends(get_settings),
+) -> ArtifactResponse:
+    return generate_weather_artifact(settings, payload)
+
+
+@app.post("/artifacts/hodograph", response_model=ArtifactResponse)
+async def artifact_hodograph(
+    payload: ArtifactRequest,
+    settings: Settings = Depends(get_settings),
+) -> ArtifactResponse:
+    return generate_weather_artifact(settings, payload)
+
+
+@app.post("/artifacts/time-height-chart", response_model=ArtifactResponse)
+async def artifact_time_height_chart(
     payload: ArtifactRequest,
     settings: Settings = Depends(get_settings),
 ) -> ArtifactResponse:

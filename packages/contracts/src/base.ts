@@ -39,6 +39,12 @@ export const weatherWorkflowSchema = z.enum([
 ])
 export const weatherSourceStatusSchema = z.enum(['official', 'secondary'])
 export const authRequirementSchema = z.enum(['none', 'optional', 'required'])
+export const chaseGuidanceLevelSchema = z.enum([
+  'analysis-only',
+  'general-target',
+  'exact-target',
+  'full-route',
+])
 export const artifactKindSchema = z.enum([
   'report',
   'chart',
@@ -59,5 +65,6 @@ export type TaskClass = z.infer<typeof taskClassSchema>
 export type WeatherWorkflow = z.infer<typeof weatherWorkflowSchema>
 export type WeatherSourceStatus = z.infer<typeof weatherSourceStatusSchema>
 export type AuthRequirement = z.infer<typeof authRequirementSchema>
+export type ChaseGuidanceLevel = z.infer<typeof chaseGuidanceLevelSchema>
 export type ArtifactKind = z.infer<typeof artifactKindSchema>
 export type LatLon = z.infer<typeof latLonSchema>
