@@ -8,6 +8,7 @@ import { getNexradRadar } from './radar'
 import { mergeArtifacts } from './previews'
 import {
   buildWeatherEnvelope,
+  summarizeText,
   type WeatherEnvelope,
   type WeatherLocationSummary,
   type WeatherProductCard,
@@ -36,6 +37,34 @@ function confidenceLevel(value: number): 'low' | 'medium' | 'high' {
   }
 
   return 'low'
+}
+
+function compactSpcText(value: string, maxChars = 220) {
+  return summarizeText(
+    value
+      .replace(/^SPC Day \d(?:-\d)? Convective Outlook:\s*/i, '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    maxChars,
+  )
+}
+
+function formatSpcRiskHeadline(riskHeadline: string | undefined) {
+  if (!riskHeadline) {
+    return undefined
+  }
+
+  const match = riskHeadline.match(
+    /^THERE IS AN? (.+?) OF SEVERE THUNDERSTORMS ACROSS (.+)$/i,
+  )
+  if (!match) {
+    return compactSpcText(riskHeadline, 180)
+  }
+
+  return compactSpcText(
+    `The SPC keeps ${match[2].toLowerCase()} in ${match[1].toLowerCase()} for severe thunderstorms.`,
+    180,
+  )
 }
 
 function inferMimeType(url: string | undefined) {
@@ -104,6 +133,76 @@ function collectFailureNames(results: Array<PromiseSettledResult<SettledEnvelope
 
     return [labels[index] ?? `source-${index + 1}`]
   })
+}
+
+function joinLabels(labels: Array<string>) {
+  const deduped = [...new Set(labels.map((label) => label.trim()).filter(Boolean))]
+  if (deduped.length === 0) {
+    return ''
+  }
+
+  if (deduped.length === 1) {
+    return deduped[0]
+  }
+
+  if (deduped.length === 2) {
+    return `${deduped[0]} and ${deduped[1]}`
+  }
+
+  return `${deduped.slice(0, -1).join(', ')}, and ${deduped.at(-1)}`
+}
+
+function availableNowcastSourceLabels(input: {
+  radar?: SettledEnvelope
+  goes?: SettledEnvelope
+  mrms?: SettledEnvelope
+}) {
+  return [
+    input.radar ? 'radar' : null,
+    input.goes ? 'satellite' : null,
+    input.mrms ? 'MRMS' : null,
+  ].filter((value): value is string => Boolean(value))
+}
+
+function buildNowcastHeadline(
+  locationName: string,
+  sourceLabels: Array<string>,
+) {
+  if (sourceLabels.length === 0) {
+    return `Near-term nowcast support around ${locationName} is currently limited.`
+  }
+
+  if (sourceLabels.length === 1) {
+    return `For the current and near-term call around ${locationName}, ${sourceLabels[0]} is the only live nowcast source currently available, so confidence is lower than ideal.`
+  }
+
+  return `For the current and near-term call around ${locationName}, ${joinLabels(sourceLabels)} and current analysis outrank model guidance.`
+}
+
+function buildNowcastScenario(
+  locationName: string,
+  sourceLabels: Array<string>,
+  summaries: Array<string>,
+  missingSources: Array<string>,
+) {
+  const combinedSummary = summaries.filter(Boolean).join(' ')
+  if (combinedSummary) {
+    return combinedSummary
+  }
+
+  if (sourceLabels.length === 0) {
+    return `Near-term nowcast support is currently limited for ${locationName}.`
+  }
+
+  if (sourceLabels.length === 1) {
+    return `${sourceLabels[0]} context is available for ${locationName}, but the full radar, satellite, and MRMS blend is incomplete right now.`
+  }
+
+  if (missingSources.length > 0) {
+    return `${joinLabels(sourceLabels)} currently provide the strongest near-term support for ${locationName}, but the full nowcast blend is incomplete.`
+  }
+
+  return `${joinLabels(sourceLabels)} currently provide the strongest near-term support for ${locationName}.`
 }
 
 function collectProductCardsFromProducts(
@@ -339,17 +438,43 @@ export async function getSevereContext(
   const envelope = await getSpcSevereProducts(app, locationQuery)
   const products = collectProductCardsFromProducts(envelope)
   const confidence = Math.max(envelope.confidence, 0.88)
+  const severeProducts = Array.isArray((envelope.data as any)?.products)
+    ? (envelope.data as any).products
+    : []
+  const highlightedProduct =
+    severeProducts.find(
+      (product: any) => typeof product.locationRelevance === 'string',
+    ) ??
+    severeProducts.find(
+      (product: any) =>
+        typeof product.riskHeadline === 'string' &&
+        !/no severe thunderstorm areas forecast/i.test(product.riskHeadline),
+    ) ??
+    severeProducts[0]
+  const watchContext =
+    typeof (envelope.data as any)?.watchContext === 'string'
+      ? compactSpcText((envelope.data as any).watchContext, 120)
+      : 'Watch status is limited right now.'
+  const mesoscaleContext =
+    typeof (envelope.data as any)?.mesoscaleContext === 'string'
+      ? compactSpcText((envelope.data as any).mesoscaleContext, 120)
+      : 'Mesoscale discussion status is limited right now.'
+  const headline =
+    formatSpcRiskHeadline(highlightedProduct?.riskHeadline) ??
+    compactSpcText(envelope.summary, 180)
+  const mostLikelyScenario = compactSpcText(
+    typeof highlightedProduct?.summary === 'string'
+      ? highlightedProduct.summary
+      : envelope.summary,
+    220,
+  )
 
   return weatherToolEnvelopeSchema.parse({
     ...envelope,
     normalizedForecast: {
       domain: 'severe-context',
-      headline: `SPC official severe context should anchor the severe-weather call for ${envelope.location.name}.`,
-      mostLikelyScenario:
-        typeof (envelope.data as any)?.watchContext === 'string' &&
-        typeof (envelope.data as any)?.mesoscaleContext === 'string'
-          ? `${envelope.summary} ${(envelope.data as any).watchContext} ${(envelope.data as any).mesoscaleContext}`
-          : envelope.summary,
+      headline,
+      mostLikelyScenario,
       alternateScenarios: [],
       likelihood: confidenceLevel(confidence),
       confidence: confidenceLevel(confidence),
@@ -358,7 +483,12 @@ export async function getSevereContext(
           category: 'official',
           weight: 'high',
           label: 'SPC outlooks',
-          detail: envelope.summary,
+          detail: compactSpcText(
+            typeof highlightedProduct?.summary === 'string'
+              ? highlightedProduct.summary
+              : envelope.summary,
+            180,
+          ),
           sourceIds: ['spc'],
           productIds: ['spc-convective-outlooks'],
         },
@@ -366,10 +496,7 @@ export async function getSevereContext(
           category: 'hazard',
           weight: 'medium',
           label: 'Watches',
-          detail:
-            typeof (envelope.data as any)?.watchContext === 'string'
-              ? (envelope.data as any).watchContext
-              : 'Current convective watch context is limited.',
+          detail: watchContext,
           sourceIds: ['spc'],
           productIds: ['spc-current-convective-watches'],
         },
@@ -377,10 +504,7 @@ export async function getSevereContext(
           category: 'hazard',
           weight: 'medium',
           label: 'Mesoscale discussions',
-          detail:
-            typeof (envelope.data as any)?.mesoscaleContext === 'string'
-              ? (envelope.data as any).mesoscaleContext
-              : 'Current mesoscale discussion context is limited.',
+          detail: mesoscaleContext,
           sourceIds: ['spc'],
           productIds: ['spc-current-mesoscale-discussions'],
         },
@@ -563,8 +687,14 @@ export async function getRadarSatelliteNowcast(
     ...(mrms ? collectProductCardsFromProducts(mrms) : []),
   ])
   const missingSources = collectFailureNames(results, labels)
-  const confidence = Math.max(0.68, averageConfidence(successful))
+  const sourceLabels = availableNowcastSourceLabels({ radar, goes, mrms })
+  const confidenceFloor =
+    successful.length >= 3 ? 0.68 : successful.length === 2 ? 0.62 : 0.56
+  const confidence = Math.max(confidenceFloor, averageConfidence(successful))
   const primary = radar ?? goes ?? successful[0]
+  const summaryParts = [radar?.summary, goes?.summary, mrms?.summary].filter(
+    (value): value is string => Boolean(value),
+  )
 
   return buildWeatherEnvelope({
     source: sourceForComposite(
@@ -578,15 +708,21 @@ export async function getRadarSatelliteNowcast(
     validAt: validAtFrom(successful) ?? primary.retrievedAt,
     validRange: validRangeFrom(successful),
     confidence,
-    summary: [radar?.summary, goes?.summary, mrms?.summary]
-      .filter(Boolean)
-      .join(' '),
+    summary: buildNowcastScenario(
+      primary.location.name,
+      sourceLabels,
+      summaryParts,
+      missingSources,
+    ),
     normalizedForecast: {
       domain: 'radar-satellite-nowcast',
-      headline: `For the current and near-term call around ${primary.location.name}, radar, satellite, MRMS, and current analysis outrank model guidance.`,
-      mostLikelyScenario:
-        [radar?.summary, goes?.summary, mrms?.summary].filter(Boolean).join(' ') ||
-        primary.summary,
+      headline: buildNowcastHeadline(primary.location.name, sourceLabels),
+      mostLikelyScenario: buildNowcastScenario(
+        primary.location.name,
+        sourceLabels,
+        summaryParts,
+        missingSources,
+      ),
       alternateScenarios: missingSources.length
         ? ['One of the real-time nowcast sources is unavailable, so near-term confidence is slightly lower.']
         : [],

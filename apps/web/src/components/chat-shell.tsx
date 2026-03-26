@@ -31,12 +31,18 @@ function pendingDraftKey() {
   return 'raincheck:pending-draft'
 }
 
+function clientRequestId() {
+  return `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 type RouteSelection = {
   provider: ProviderId
   model: string
 }
 
 type PendingDraft = RouteSelection & {
+  clientRequestId: string
+  draftId: string
   conversationId: string
   text: string
   locationOverride?: ChatLocationOverride | null
@@ -104,10 +110,12 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     )
 
   const draftSentRef = useRef(false)
+  const pendingDraftDispatchRef = useRef<string | null>(null)
   const hydratedRouteConversationIdRef = useRef<string | null>(null)
   const syncedConversationSnapshotRef = useRef<string | null>(null)
   const messageEndRef = useRef<HTMLDivElement | null>(null)
   const liveStatusIdRef = useRef(0)
+  const wasLoadingRef = useRef(false)
 
   const conversationsQuery = useQuery({
     queryKey: ['conversations'],
@@ -250,24 +258,38 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     onError: () => {
       setLiveStatus(null)
     },
-    onFinish: async () => {
-      setLiveStatus(null)
-      setComposerValue('')
+  })
 
+  useEffect(() => {
+    if (chat.isLoading) {
+      wasLoadingRef.current = true
+      return
+    }
+
+    if (!wasLoadingRef.current) {
+      return
+    }
+
+    wasLoadingRef.current = false
+    setLiveStatus(null)
+    setComposerValue('')
+
+    void (async () => {
       await queryClient.invalidateQueries({ queryKey: ['conversations'] })
       if (conversationId) {
         await queryClient.invalidateQueries({
           queryKey: ['conversation', conversationId],
         })
       }
-    },
-  })
+    })()
+  }, [chat.isLoading, conversationId, queryClient])
 
   useEffect(() => {
     if (!conversationId) {
       hydratedRouteConversationIdRef.current = null
       syncedConversationSnapshotRef.current = null
       draftSentRef.current = false
+      pendingDraftDispatchRef.current = null
       if (pendingDraft) {
         setPendingDraft(null)
       }
@@ -398,6 +420,10 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     }
 
     const nextDraft: PendingDraft = {
+      clientRequestId: parsed.clientRequestId ?? clientRequestId(),
+      draftId:
+        parsed.draftId ??
+        `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       conversationId,
       text: parsed.text,
       provider: parsed.provider ?? selectedRoute.provider,
@@ -434,6 +460,10 @@ export function ChatShell({ conversationId }: ChatShellProps) {
       return
     }
 
+    if (pendingDraftDispatchRef.current === pendingDraft.draftId) {
+      return
+    }
+
     if (
       pendingDraft.provider !== selectedRoute.provider ||
       pendingDraft.model !== selectedRoute.model
@@ -441,14 +471,18 @@ export function ChatShell({ conversationId }: ChatShellProps) {
       return
     }
 
+    pendingDraftDispatchRef.current = pendingDraft.draftId
     setPendingDraft(null)
     void chat.sendMessage(
       pendingDraft.text,
-      pendingDraft.locationOverride
-        ? {
-            locationOverride: pendingDraft.locationOverride,
-          }
-        : undefined,
+      {
+        clientRequestId: pendingDraft.clientRequestId,
+        ...(pendingDraft.locationOverride
+          ? {
+              locationOverride: pendingDraft.locationOverride,
+            }
+          : {}),
+      },
     )
   }, [
     chat,
@@ -459,8 +493,9 @@ export function ChatShell({ conversationId }: ChatShellProps) {
   ])
 
   const messages = conversationId ? chat.messages : []
+  const lastMessage = messages[messages.length - 1]
   const showPendingAssistantRow =
-    chat.isLoading && messages[messages.length - 1]?.role !== 'assistant'
+    chat.isLoading && lastMessage?.role !== 'assistant'
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({
@@ -495,9 +530,13 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     await queryClient.invalidateQueries({ queryKey: ['conversations'] })
     if (text) {
       const locationOverride = await resolveMessageLocationOverride()
+      const draftId = `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const requestId = clientRequestId()
       window.sessionStorage.setItem(
         pendingDraftKey(),
         JSON.stringify({
+          clientRequestId: requestId,
+          draftId,
           conversationId: conversation.id,
           text,
           provider: selectedRoute.provider,
@@ -542,7 +581,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
 
   async function submitComposer() {
     const trimmed = composerValue.trim()
-    if (!trimmed) {
+    if (!trimmed || chat.isLoading) {
       return
     }
 
@@ -556,14 +595,18 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     }
 
     const messageLocationOverride = await resolveMessageLocationOverride()
+    const requestId = clientRequestId()
 
     await chat.sendMessage(
       trimmed,
-      messageLocationOverride
-        ? {
-            locationOverride: messageLocationOverride,
-          }
-        : undefined,
+      {
+        clientRequestId: requestId,
+        ...(messageLocationOverride
+          ? {
+              locationOverride: messageLocationOverride,
+            }
+          : {}),
+      },
     )
   }
 
@@ -640,44 +683,43 @@ export function ChatShell({ conversationId }: ChatShellProps) {
                 <p className="sidebar-brand">RainCheck</p>
               </div>
             ) : (
-              messages.map((message: any, index: number) => (
-                <MessageView
-                  isLastAssistant={
-                    message.role === 'assistant' &&
-                    messages
-                      .slice(index + 1)
-                      .every((item: any) => item.role !== 'assistant')
-                  }
-                  isStreaming={
-                    chat.isLoading &&
-                    message.role === 'assistant' &&
-                    index === messages.length - 1
-                  }
-                  key={message.id}
-                  message={message}
-                  suppressThinkingIndicator={Boolean(
-                    liveStatus &&
-                      chat.isLoading &&
-                      message.role === 'assistant' &&
-                      index === messages.length - 1,
-                  )}
-                  onCopy={(text) => navigator.clipboard.writeText(text)}
-                  onEditAndResend={(messageId, newText) =>
-                    void handleEditAndResend(messageId, newText)
-                  }
-                  onOpenArtifact={setSelectedArtifact}
-                  onRetry={() => void chat.reload()}
-                />
-              ))
+              messages.map((message: any, index: number) => {
+                const isLastAssistant =
+                  message.role === 'assistant' &&
+                  messages
+                    .slice(index + 1)
+                    .every((item: any) => item.role !== 'assistant')
+                const isStreamingAssistant =
+                  chat.isLoading &&
+                  message.role === 'assistant' &&
+                  index === messages.length - 1
+
+                return (
+                  <MessageView
+                    isLastAssistant={isLastAssistant}
+                    isStreaming={isStreamingAssistant}
+                    key={message.id}
+                    message={message}
+                    liveStatusLabel={
+                      isStreamingAssistant ? (liveStatus?.label ?? null) : null
+                    }
+                    onCopy={(text) => navigator.clipboard.writeText(text)}
+                    onEditAndResend={(messageId, newText) =>
+                      void handleEditAndResend(messageId, newText)
+                    }
+                    onOpenArtifact={setSelectedArtifact}
+                    onRetry={() => void chat.reload()}
+                  />
+                )
+              })
             )}
-            {showPendingAssistantRow || liveStatus ? (
+            {showPendingAssistantRow ? (
               <div className="message-row">
                 <div className="message-wrap">
                   <div className="message-bubble">
                     <div
                       aria-live="polite"
                       className="assistant-status"
-                      key={liveStatus?.id ?? 'pending'}
                       role="status"
                     >
                       <div className="thinking-indicator">

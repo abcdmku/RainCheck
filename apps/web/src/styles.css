@@ -784,10 +784,80 @@ button {
   font-size: 0.78rem;
 }
 
-.source-card {
-  padding: 0;
-  background: transparent;
+/* ── Collapsible sources ─────────────────────── */
+
+.sources-collapse {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
+
+.sources-collapse-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+  width: fit-content;
+}
+
+.sources-collapse-trigger:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+.sources-collapse-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.sources-collapse-chevron {
+  transition: transform 200ms ease;
+  flex-shrink: 0;
+}
+
+.sources-collapse.is-open .sources-collapse-chevron {
+  transform: rotate(180deg);
+}
+
+.sources-collapse-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 10px;
+  animation: sources-reveal 200ms ease;
+}
+
+@keyframes sources-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Source chips (shared) ───────────────────── */
 
 .source-chip-wrap {
   display: flex;

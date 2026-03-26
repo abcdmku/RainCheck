@@ -5,8 +5,6 @@ import {
   buildWeatherEnvelope,
   cacheKey,
   fetchWeatherText,
-  stripHtml,
-  summarizeText,
   type WeatherEnvelope,
 } from './runtime'
 
@@ -50,15 +48,14 @@ export async function getMrmsProducts(
     loadMrmsPage(app, mrmsInfoUrl(), 'mrms-info', 'MRMS product page'),
     loadMrmsPage(app, mrmsGuideUrl(), 'mrms-guide', 'MRMS guide'),
   ])
-  const text = stripHtml(`${mrms.value} ${guide.value}`)
+  void guide
 
   return buildWeatherEnvelope({
     source: mrms.source,
     location,
     units: 'qpe/reflectivity',
     confidence: 0.7,
-    summary:
-      summarizeText(text, 250) || `MRMS context for ${location.name}.`,
+    summary: `MRMS context is available for ${location.name} and supports near-real-time radar composite and precipitation analysis.`,
     data: {
       products: [
         {

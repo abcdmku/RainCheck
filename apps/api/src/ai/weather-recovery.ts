@@ -8,7 +8,9 @@ import {
 } from '../weather/domain-tools'
 import { getGlobalGuidance, getShortRangeGuidance } from '../weather/models'
 import type { WeatherEnvelope } from '../weather/runtime'
+import { generateArtifact } from '../weather/service-client'
 import { synthesizeWeatherConclusion } from '../weather/synthesis'
+import { normalizeTimingLanguage } from '../weather/timing-language'
 
 export type WeatherRecoveryToolResult = {
   toolCallId: string
@@ -38,6 +40,16 @@ function isWeatherConclusion(value: unknown): value is Record<string, any> {
   )
 }
 
+function isResolvedLocation(value: unknown): value is Record<string, any> {
+  return (
+    isRecord(value) &&
+    typeof value.query === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.latitude === 'number' &&
+    typeof value.longitude === 'number'
+  )
+}
+
 function latestToolResult(
   toolResults: Array<WeatherRecoveryToolResult>,
   toolName: string,
@@ -52,7 +64,9 @@ function latestEnvelope(
   toolName: string,
 ) {
   const result = latestToolResult(toolResults, toolName)?.result
-  return isWeatherEnvelope(result) ? (result as WeatherEnvelope<any>) : undefined
+  return isWeatherEnvelope(result)
+    ? (result as WeatherEnvelope<any>)
+    : undefined
 }
 
 function dedupeToolResults(toolResults: Array<WeatherRecoveryToolResult>) {
@@ -92,7 +106,10 @@ async function maybeRecoverTool(
 
 function formatConfidence(confidence: unknown) {
   if (typeof confidence === 'string') {
-    return confidence.toLowerCase()
+    return {
+      level: confidence.toLowerCase(),
+      reason: null,
+    }
   }
 
   if (
@@ -100,14 +117,122 @@ function formatConfidence(confidence: unknown) {
     typeof confidence.level === 'string' &&
     typeof confidence.reason === 'string'
   ) {
-    return `${confidence.level.toLowerCase()} because ${confidence.reason}`
+    return {
+      level: confidence.level.toLowerCase(),
+      reason: confidence.reason,
+    }
   }
 
   return null
 }
 
 function lowerFirst(value: string) {
-  return value ? value.charAt(0).toLowerCase() + value.slice(1) : value
+  if (!value) {
+    return value
+  }
+
+  if (/^[A-Z]{2,}\b/.test(value)) {
+    return value
+  }
+
+  return value.charAt(0).toLowerCase() + value.slice(1)
+}
+
+function formatMostLikelyScenario(value: string) {
+  const trimmed = normalizeTimingLanguage(value).trim()
+  if (!trimmed) {
+    return null
+  }
+
+  if (/^(most likely|the most likely)\b/i.test(trimmed)) {
+    return trimmed
+  }
+
+  return `Most likely, ${lowerFirst(trimmed)}`
+}
+
+function hasArtifactPayload(toolResults: Array<WeatherRecoveryToolResult>) {
+  return toolResults.some((toolResult) => {
+    const result = toolResult.result
+    return (
+      (isRecord(result) &&
+        typeof result.artifactId === 'string' &&
+        typeof result.href === 'string') ||
+      (isRecord(result) &&
+        Array.isArray(result.artifacts) &&
+        result.artifacts.length > 0)
+    )
+  })
+}
+
+function artifactSectionsFromConclusion(result: Record<string, any>) {
+  const sections = [
+    typeof result.bottomLine === 'string'
+      ? normalizeTimingLanguage(result.bottomLine)
+      : null,
+    typeof result.mostLikelyScenario === 'string'
+      ? formatMostLikelyScenario(result.mostLikelyScenario)
+      : null,
+    isRecord(result.confidence) && typeof result.confidence.reason === 'string'
+      ? `Confidence: ${normalizeTimingLanguage(result.confidence.reason)}`
+      : null,
+    Array.isArray(result.conflicts) && typeof result.conflicts[0] === 'string'
+      ? `Main uncertainty: ${normalizeTimingLanguage(result.conflicts[0])}`
+      : null,
+  ].filter((value): value is string => Boolean(value))
+
+  return sections.length > 0 ? sections : ['Supported weather visual summary.']
+}
+
+function latestRecoveredLocationQuery(
+  toolResults: Array<WeatherRecoveryToolResult>,
+) {
+  for (const toolResult of [...toolResults].reverse()) {
+    if (
+      toolResult.toolName === 'resolve_location' &&
+      isResolvedLocation(toolResult.result)
+    ) {
+      const query = toolResult.result.query?.trim()
+      if (query) {
+        return query
+      }
+
+      const name = toolResult.result.name?.trim()
+      if (name) {
+        return name
+      }
+    }
+
+    if (!isWeatherEnvelope(toolResult.result)) {
+      continue
+    }
+
+    const query = toolResult.result.location?.query?.trim()
+    if (query) {
+      return query
+    }
+
+    const name = toolResult.result.location?.name?.trim()
+    if (name) {
+      return name
+    }
+  }
+
+  return null
+}
+
+function inferLocationQueryFromQuestion(userQuestion: string) {
+  const coordinateMatch = userQuestion.match(
+    /(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/,
+  )
+  if (coordinateMatch) {
+    return `${coordinateMatch[1]}, ${coordinateMatch[2]}`
+  }
+
+  const locationMatch = userQuestion.match(
+    /\b(?:in|near|around|for|across)\s+([a-z0-9 .,'-]+?)(?=\s+(?:what|where|when|which|should|could|would|will|do|does|did|because|according|currently|tonight|today|tomorrow|this|other|models|storms?|tornado(?:s|es)?|hail|wind)\b|[?.!,]|$)/i,
+  )
+  return locationMatch?.[1]?.trim() ?? null
 }
 
 export function buildWeatherFallbackText(
@@ -130,44 +255,23 @@ export function buildWeatherFallbackText(
           (value): value is string => typeof value === 'string',
         )
       : []
-    const products = Array.isArray(conclusionResult.productCards)
-      ? conclusionResult.productCards
-          .map((product) =>
-            isRecord(product) && typeof product.title === 'string'
-              ? product.title
-              : null,
-          )
-          .filter((value): value is string => value != null)
-      : []
-
-    const firstParagraph = [
-      conclusionResult.bottomLine,
+    const summaryText = [
+      normalizeTimingLanguage(conclusionResult.bottomLine),
       typeof conclusionResult.mostLikelyScenario === 'string'
-        ? `Most likely, ${lowerFirst(conclusionResult.mostLikelyScenario)}`
+        ? formatMostLikelyScenario(conclusionResult.mostLikelyScenario)
         : null,
-      confidence ? `Confidence is ${confidence}.` : null,
-    ]
-      .filter(Boolean)
-      .join(' ')
-
-    const secondParagraph = [
-      keySignals.length > 0
-        ? `The main reasons are ${keySignals
-            .slice(0, 2)
-            .map((signal) => lowerFirst(signal.replace(/\.$/, '')))
-            .join('; ')}.`
-        : null,
+      confidence?.level ? `Confidence is ${confidence.level}.` : null,
       conflicts.length > 0
-        ? `The main uncertainty is ${lowerFirst(conflicts[0].replace(/\.$/, ''))}.`
+        ? `Biggest uncertainty: ${lowerFirst(conflicts[0].replace(/\.$/, ''))}.`
         : null,
-      products.length > 0
-        ? `I leaned most on ${products.slice(0, 3).join(', ')}.`
+      !conflicts.length && !keySignals.length && confidence?.reason
+        ? `That confidence is mainly because ${lowerFirst(confidence.reason.replace(/\.$/, ''))}.`
         : null,
     ]
       .filter(Boolean)
       .join(' ')
 
-    return [firstParagraph, secondParagraph].filter(Boolean).join('\n\n')
+    return normalizeTimingLanguage(summaryText)
   }
 
   const latestWeatherResult = [...toolResults]
@@ -176,7 +280,7 @@ export function buildWeatherFallbackText(
     .find(isWeatherEnvelope)
 
   if (latestWeatherResult) {
-    return latestWeatherResult.summary
+    return normalizeTimingLanguage(latestWeatherResult.summary)
   }
 
   return null
@@ -193,9 +297,20 @@ export async function recoverWeatherToolResults(
   }
 
   const recovered: Array<WeatherRecoveryToolResult> = []
-  const existingToolNames = new Set(toolResults.map((toolResult) => toolResult.toolName))
+  const existingToolNames = new Set(
+    toolResults.map((toolResult) => toolResult.toolName),
+  )
+  const recoveredLocationQuery =
+    latestRecoveredLocationQuery(toolResults) ??
+    inferLocationQueryFromQuestion(userQuestion)
   const locationInput = {
-    locationQuery: userQuestion,
+    locationQuery:
+      recoveredLocationQuery ??
+      (classification.locationRequired ? null : 'United States'),
+  }
+
+  if (!locationInput.locationQuery) {
+    return []
   }
 
   switch (classification.intent) {
@@ -206,21 +321,21 @@ export async function recoverWeatherToolResults(
           existingToolNames,
           'get_severe_context',
           locationInput,
-          () => getSevereContext(app, userQuestion),
+          () => getSevereContext(app, locationInput.locationQuery),
         ),
         maybeRecoverTool(
           recovered,
           existingToolNames,
           'get_short_range_guidance',
           locationInput,
-          () => getShortRangeGuidance(app, userQuestion),
+          () => getShortRangeGuidance(app, locationInput.locationQuery),
         ),
         maybeRecoverTool(
           recovered,
           existingToolNames,
           'get_radar_satellite_nowcast',
           locationInput,
-          () => getRadarSatelliteNowcast(app, userQuestion),
+          () => getRadarSatelliteNowcast(app, locationInput.locationQuery),
         ),
       ])
       break
@@ -232,14 +347,14 @@ export async function recoverWeatherToolResults(
           existingToolNames,
           'get_short_range_guidance',
           locationInput,
-          () => getShortRangeGuidance(app, userQuestion),
+          () => getShortRangeGuidance(app, locationInput.locationQuery),
         ),
         maybeRecoverTool(
           recovered,
           existingToolNames,
           'get_radar_satellite_nowcast',
           locationInput,
-          () => getRadarSatelliteNowcast(app, userQuestion),
+          () => getRadarSatelliteNowcast(app, locationInput.locationQuery),
         ),
       ])
       break
@@ -251,14 +366,14 @@ export async function recoverWeatherToolResults(
           existingToolNames,
           'get_precip_flood_context',
           locationInput,
-          () => getPrecipFloodContext(app, userQuestion),
+          () => getPrecipFloodContext(app, locationInput.locationQuery),
         ),
         maybeRecoverTool(
           recovered,
           existingToolNames,
           'get_radar_satellite_nowcast',
           locationInput,
-          () => getRadarSatelliteNowcast(app, userQuestion),
+          () => getRadarSatelliteNowcast(app, locationInput.locationQuery),
         ),
       ])
       break
@@ -269,7 +384,7 @@ export async function recoverWeatherToolResults(
         existingToolNames,
         'get_global_guidance',
         locationInput,
-        () => getGlobalGuidance(app, userQuestion),
+        () => getGlobalGuidance(app, locationInput.locationQuery),
       )
       break
     case 'radar':
@@ -281,7 +396,7 @@ export async function recoverWeatherToolResults(
         existingToolNames,
         'get_radar_satellite_nowcast',
         locationInput,
-        () => getRadarSatelliteNowcast(app, userQuestion),
+        () => getRadarSatelliteNowcast(app, locationInput.locationQuery),
       )
       break
     default:
@@ -289,7 +404,11 @@ export async function recoverWeatherToolResults(
   }
 
   const combinedToolResults = dedupeToolResults([...toolResults, ...recovered])
-  if (!combinedToolResults.some((toolResult) => toolResult.toolName === 'synthesize_weather_conclusion')) {
+  if (
+    !combinedToolResults.some(
+      (toolResult) => toolResult.toolName === 'synthesize_weather_conclusion',
+    )
+  ) {
     const synthesisInput = {
       userQuestion,
       workflow: classification.intent as any,
@@ -299,7 +418,10 @@ export async function recoverWeatherToolResults(
         combinedToolResults,
         'get_short_range_guidance',
       ),
-      globalGuidance: latestEnvelope(combinedToolResults, 'get_global_guidance'),
+      globalGuidance: latestEnvelope(
+        combinedToolResults,
+        'get_global_guidance',
+      ),
       precipFloodContext: latestEnvelope(
         combinedToolResults,
         'get_precip_flood_context',
@@ -328,6 +450,41 @@ export async function recoverWeatherToolResults(
         input: synthesisInput,
         result: synthesizeWeatherConclusion(synthesisInput),
       })
+    }
+  }
+
+  const toolResultsWithSynthesis = dedupeToolResults([
+    ...toolResults,
+    ...recovered,
+  ])
+  const synthesizedResult = [...toolResultsWithSynthesis]
+    .reverse()
+    .map((toolResult) => toolResult.result)
+    .find(isWeatherConclusion)
+
+  if (
+    classification.needsArtifact &&
+    synthesizedResult &&
+    !hasArtifactPayload(toolResultsWithSynthesis)
+  ) {
+    try {
+      const artifact = await generateArtifact(app, {
+        artifactType: 'brief-report',
+        locationQuery: locationInput.locationQuery,
+        prompt: `Supported severe-weather visual summary for ${locationInput.locationQuery}`,
+        sections: artifactSectionsFromConclusion(synthesizedResult),
+      })
+      recovered.push({
+        toolCallId: 'recovery-generate_weather_artifact',
+        toolName: 'generate_weather_artifact',
+        input: {
+          artifactType: 'brief-report',
+          locationQuery: locationInput.locationQuery,
+        },
+        result: artifact,
+      })
+    } catch {
+      // Artifact recovery is best-effort only.
     }
   }
 

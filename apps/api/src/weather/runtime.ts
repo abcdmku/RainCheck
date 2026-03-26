@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify'
 import { AppError } from '../lib/errors'
 import { fetchJson, fetchText } from '../lib/http'
 import { nowIso } from '../lib/time'
+import { normalizeTimingLanguage } from './timing-language'
 
 type CacheEntry = {
   expiresAt: number
@@ -128,6 +129,45 @@ export type WeatherFetchResult<T> = {
   cached: boolean
 }
 
+function sanitizeProductCard(card: WeatherProductCard) {
+  return {
+    ...card,
+    title: normalizeTimingLanguage(card.title),
+    summary: normalizeTimingLanguage(card.summary),
+    imageAlt: card.imageAlt
+      ? normalizeTimingLanguage(card.imageAlt)
+      : undefined,
+  } satisfies WeatherProductCard
+}
+
+function sanitizeNormalizedForecast(
+  value: NormalizedForecast | undefined,
+): NormalizedForecast | undefined {
+  if (!value) {
+    return undefined
+  }
+
+  return {
+    ...value,
+    headline: normalizeTimingLanguage(value.headline),
+    mostLikelyScenario: value.mostLikelyScenario
+      ? normalizeTimingLanguage(value.mostLikelyScenario)
+      : undefined,
+    alternateScenarios: (value.alternateScenarios ?? []).map(
+      normalizeTimingLanguage,
+    ),
+    keySignals: (value.keySignals ?? []).map((signal) => ({
+      ...signal,
+      label: normalizeTimingLanguage(signal.label),
+      detail: normalizeTimingLanguage(signal.detail),
+    })),
+    conflicts: (value.conflicts ?? []).map(normalizeTimingLanguage),
+    failureModes: (value.failureModes ?? []).map(normalizeTimingLanguage),
+    whatWouldChange: (value.whatWouldChange ?? []).map(normalizeTimingLanguage),
+    productCards: (value.productCards ?? []).map(sanitizeProductCard),
+  }
+}
+
 type FetchFailure = {
   sourceId: string
   productId: string
@@ -138,7 +178,9 @@ function normalizeKeyPart(value: string | number | boolean | null | undefined) {
   return value == null ? '' : String(value)
 }
 
-export function cacheKey(...parts: Array<string | number | boolean | null | undefined>) {
+export function cacheKey(
+  ...parts: Array<string | number | boolean | null | undefined>
+) {
   return parts.map(normalizeKeyPart).filter(Boolean).join(':')
 }
 
@@ -185,9 +227,7 @@ async function withRetry<T>(handler: () => Promise<T>, retries: number) {
     } catch (error) {
       lastError = error
       if (attempt < retries) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, 150 * (attempt + 1)),
-        )
+        await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)))
       }
     }
   }
@@ -195,7 +235,11 @@ async function withRetry<T>(handler: () => Promise<T>, retries: number) {
   throw lastError
 }
 
-function sourceCitation(source: WeatherSourceTag, retrievedAt: string, note?: string) {
+function sourceCitation(
+  source: WeatherSourceTag,
+  retrievedAt: string,
+  note?: string,
+) {
   return {
     id: `${source.sourceId}:${source.productId}`,
     label: source.label,
@@ -278,9 +322,7 @@ export function buildWeatherEnvelope<TData>(input: {
 }) {
   const retrievedAt = input.retrievedAt ?? nowIso()
   const units =
-    typeof input.units === 'string'
-      ? { defaultUnit: input.units }
-      : input.units
+    typeof input.units === 'string' ? { defaultUnit: input.units } : input.units
   const confidence = input.confidence ?? 0.75
 
   return {
@@ -292,16 +334,18 @@ export function buildWeatherEnvelope<TData>(input: {
     location: input.location,
     units,
     confidence,
-    summary: input.summary,
+    summary: normalizeTimingLanguage(input.summary),
     normalizedForecast:
-      input.normalizedForecast ??
-      buildDefaultNormalizedForecast({
-        source: input.source,
-        summary: input.summary,
-        confidence,
-        validAt: input.validAt,
-        validRange: input.validRange,
-      }),
+      sanitizeNormalizedForecast(input.normalizedForecast) ??
+      sanitizeNormalizedForecast(
+        buildDefaultNormalizedForecast({
+          source: input.source,
+          summary: input.summary,
+          confidence,
+          validAt: input.validAt,
+          validRange: input.validRange,
+        }),
+      )!,
     data: input.data,
     citations: input.citations ?? [sourceCitation(input.source, retrievedAt)],
     artifacts: input.artifacts,
@@ -323,7 +367,8 @@ export async function fetchWeatherJson<T>(
   } = {},
 ): Promise<WeatherFetchResult<T>> {
   const ttlMs = options.ttlMs ?? target.ttlMs ?? 5 * 60 * 1000
-  const cacheName = target.cacheKey ?? cacheKey(target.sourceId, target.productId, target.url)
+  const cacheName =
+    target.cacheKey ?? cacheKey(target.sourceId, target.productId, target.url)
   const cached = readCache<T>(cacheName)
   if (cached) {
     return {
@@ -346,7 +391,8 @@ export async function fetchWeatherJson<T>(
       cached: false,
     }
   } catch (error) {
-    const stale = options.allowStale !== false ? readStaleCache<T>(cacheName) : null
+    const stale =
+      options.allowStale !== false ? readStaleCache<T>(cacheName) : null
     if (stale) {
       return {
         value: stale,
@@ -380,7 +426,8 @@ export async function fetchWeatherText(
   } = {},
 ): Promise<WeatherFetchResult<string>> {
   const ttlMs = options.ttlMs ?? target.ttlMs ?? 5 * 60 * 1000
-  const cacheName = target.cacheKey ?? cacheKey(target.sourceId, target.productId, target.url)
+  const cacheName =
+    target.cacheKey ?? cacheKey(target.sourceId, target.productId, target.url)
   const cached = readCache<string>(cacheName)
   if (cached) {
     return {
@@ -403,7 +450,8 @@ export async function fetchWeatherText(
       cached: false,
     }
   } catch (error) {
-    const stale = options.allowStale !== false ? readStaleCache<string>(cacheName) : null
+    const stale =
+      options.allowStale !== false ? readStaleCache<string>(cacheName) : null
     if (stale) {
       return {
         value: stale,

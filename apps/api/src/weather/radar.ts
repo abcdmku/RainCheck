@@ -6,8 +6,6 @@ import {
   cacheKey,
   fetchWeatherJson,
   fetchWeatherText,
-  stripHtml,
-  summarizeText,
   type WeatherEnvelope,
 } from './runtime'
 
@@ -89,7 +87,7 @@ export async function getNexradRadar(
     loadRadarPage(app, nexradInfoUrl(), 'nexrad-info', 'NEXRAD product page'),
     loadRadarPage(app, radarGuideUrl(), 'radar-guide', 'Radar guide'),
   ])
-  const text = stripHtml(`${nexrad.value} ${guide.value}`)
+  void guide
   const loopUrl = radarStation
     ? `https://radar.weather.gov/ridge/standard/${radarStation}_loop.gif`
     : 'https://radar.weather.gov/ridge/standard/CONUS_loop.gif'
@@ -102,7 +100,9 @@ export async function getNexradRadar(
     location,
     units: 'reflectivity/velocity',
     confidence: 0.74,
-    summary: summarizeText(text, 250) || `Radar context for ${location.name}.`,
+    summary: radarStation
+      ? `NEXRAD radar context is available for ${location.name} from ${radarStation} and supports near-term storm tracking.`
+      : `NEXRAD radar context is available for ${location.name} from the national composite and supports near-term storm tracking.`,
     thumbnailUrl: loopUrl,
     imageAlt: radarStation
       ? `${radarStation} NEXRAD radar loop`

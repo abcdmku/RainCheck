@@ -5,8 +5,6 @@ import {
   buildWeatherEnvelope,
   cacheKey,
   fetchWeatherText,
-  stripHtml,
-  summarizeText,
   type WeatherEnvelope,
   type WeatherProductCard,
   type WeatherSignal,
@@ -291,6 +289,27 @@ function buildGlobalProducts() {
   ] satisfies Array<ModelProduct>
 }
 
+function dedupeLabels(labels: Array<string>) {
+  return [...new Set(labels.map((label) => label.trim()).filter(Boolean))]
+}
+
+function joinLabels(labels: Array<string>) {
+  const deduped = dedupeLabels(labels)
+  if (deduped.length === 0) {
+    return ''
+  }
+
+  if (deduped.length === 1) {
+    return deduped[0]
+  }
+
+  if (deduped.length === 2) {
+    return `${deduped[0]} and ${deduped[1]}`
+  }
+
+  return `${deduped.slice(0, -1).join(', ')}, and ${deduped.at(-1)}`
+}
+
 export async function getShortRangeGuidance(
   app: FastifyInstance,
   locationQuery: string,
@@ -370,6 +389,7 @@ export async function getShortRangeGuidance(
   }
 
   const products = buildShortRangeProducts()
+  const availableLabels = dedupeLabels(successful.map((entry) => entry.source.label))
   const confidence = Math.max(0.58, Math.min(0.88, 0.56 + successful.length * 0.04))
   const missingSources = settledFailures(results)
   const headline =
@@ -386,11 +406,9 @@ export async function getShortRangeGuidance(
     units: 'model-guidance',
     confidence,
     validAt: successful[0].retrievedAt,
-    summary:
-      summarizeText(
-        successful.map((entry) => stripHtml(entry.value)).join(' '),
-        280,
-      ) || `Short-range guidance context for ${location.name}.`,
+    summary: availableLabels.length
+      ? `Short-range guidance source context is available for ${location.name} from ${joinLabels(availableLabels)}. Use HREF for spread, HRRR and RAP for timing, and NAM family with NBM, RTMA, and URMA for baseline placement.`
+      : `Short-range guidance context for ${location.name}.`,
     normalizedForecast: {
       domain: 'short-range-guidance',
       headline,
@@ -478,6 +496,7 @@ export async function getGlobalGuidance(
   }
 
   const products = buildGlobalProducts()
+  const availableLabels = dedupeLabels(successful.map((entry) => entry.source.label))
   const confidence = Math.max(0.56, Math.min(0.82, 0.58 + successful.length * 0.06))
   const missingSources = settledFailures(results)
   const headline =
@@ -494,11 +513,9 @@ export async function getGlobalGuidance(
     units: 'model-guidance',
     confidence,
     validAt: successful[0].retrievedAt,
-    summary:
-      summarizeText(
-        successful.map((entry) => stripHtml(entry.value)).join(' '),
-        280,
-      ) || `Global guidance context for ${location.name}.`,
+    summary: availableLabels.length
+      ? `Global guidance source context is available for ${location.name} from ${joinLabels(availableLabels)}. Use GEFS for spread, GFS for deterministic timing, and ECMWF open data as the broader pattern cross-check.`
+      : `Global guidance context for ${location.name}.`,
     normalizedForecast: {
       domain: 'global-guidance',
       headline,

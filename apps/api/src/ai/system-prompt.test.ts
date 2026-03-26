@@ -84,4 +84,24 @@ describe('buildSystemPrompt', () => {
       'Before the final answer for this workflow, call synthesize_weather_conclusion',
     )
   })
+
+  it('adds capability-aware visual guidance when the user asks for a supported visual', () => {
+    const prompt = buildSystemPrompt(
+      classification({
+        intent: 'severe-weather',
+        taskClass: 'research',
+        needsArtifact: true,
+      }),
+    )
+
+    expect(prompt).toContain(
+      'Do not provide a chase route, exact intercept point, or go-here-at-this-time severe-weather itinerary.',
+    )
+    expect(prompt).toContain(
+      'Prefer a single official map, radar loop, satellite loop, or brief artifact',
+    )
+    expect(prompt).toContain(
+      'use the closest supported official visual instead',
+    )
+  })
 })

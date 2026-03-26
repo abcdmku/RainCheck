@@ -6,8 +6,6 @@ import {
   buildWeatherEnvelope,
   cacheKey,
   fetchWeatherText,
-  stripHtml,
-  summarizeText,
   type WeatherEnvelope,
 } from './runtime'
 import { generateArtifact } from './service-client'
@@ -97,7 +95,7 @@ export async function getGoesSatellite(
       'Satellite guide',
     ),
   ])
-  const text = stripHtml(`${goes.value} ${guide.value}`)
+  void guide
   const loopFrames = extractSatelliteFrames(goes.value)
   const latestFrameUrl =
     loopFrames.at(-1)?.imageUrl ??
@@ -135,8 +133,7 @@ export async function getGoesSatellite(
     location,
     units: 'imagery',
     confidence: 0.74,
-    summary:
-      summarizeText(text, 250) || `Satellite context for ${location.name}.`,
+    summary: `GOES-19 infrared context is available for ${location.name} and supports cloud-top and convective evolution analysis.`,
     ...preview,
     artifacts,
     data: {

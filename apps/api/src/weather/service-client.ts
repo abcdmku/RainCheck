@@ -242,7 +242,10 @@ function buildReportHtml(
   </html>`
 }
 
-function buildMeteogramFallback(app: FastifyInstance, forecast: Awaited<ReturnType<typeof loadMeteogramForecast>>) {
+function buildMeteogramFallback(
+  app: FastifyInstance,
+  forecast: Awaited<ReturnType<typeof loadMeteogramForecast>>,
+) {
   const points = buildMeteogramPath(forecast)
   const artifactId = `meteogram-${Date.now()}.svg`
   return writeArtifactFile(
@@ -274,7 +277,15 @@ function resolveChartPoints(
 
 function buildGenericChartFallback(
   app: FastifyInstance,
-  artifactType: Exclude<BaseArtifactType, 'meteogram' | 'research-report' | 'brief-report' | 'radar-loop' | 'satellite-loop' | 'skewt'>,
+  artifactType: Exclude<
+    BaseArtifactType,
+    | 'meteogram'
+    | 'research-report'
+    | 'brief-report'
+    | 'radar-loop'
+    | 'satellite-loop'
+    | 'skewt'
+  >,
   options: ArtifactOptions,
   forecast: Awaited<ReturnType<typeof loadMeteogramForecast>>,
 ) {
@@ -330,15 +341,20 @@ function buildPanelFallback(
   }
   const artifactId = `${artifactType}-${Date.now()}.html`
   const lines =
-    options.frames?.length && (artifactType === 'radar-loop' || artifactType === 'satellite-loop')
-      ? options.frames.slice(0, 3).map((frame) =>
-          [frame.label, frame.description].filter(Boolean).join(': '),
-        )
-      : [
-          'Structured radar, satellite, model, and sounding inputs are not yet decoded in this local fallback.',
-          'The Python weather service will replace this placeholder once richer artifact generation lands.',
-          'This file still gives the chat thread a durable, clickable artifact instead of failing silently.',
-        ]
+    options.frames?.length &&
+    (artifactType === 'radar-loop' || artifactType === 'satellite-loop')
+      ? options.frames
+          .slice(0, 3)
+          .map((frame) =>
+            [frame.label, frame.description].filter(Boolean).join(': '),
+          )
+      : artifactType === 'brief-report' && options.sections?.length
+        ? options.sections.slice(0, 4)
+        : [
+            'Structured radar, satellite, model, and sounding inputs are not yet decoded in this local fallback.',
+            'The Python weather service will replace this placeholder once richer artifact generation lands.',
+            'This file still gives the chat thread a durable, clickable artifact instead of failing silently.',
+          ]
   return writeArtifactFile(
     app,
     artifactId,
@@ -444,11 +460,7 @@ export async function generateArtifact(
     options.artifactType === 'skewt' ||
     options.artifactType === 'brief-report'
   ) {
-    return buildPanelFallback(
-      app,
-      options.artifactType,
-      options,
-    )
+    return buildPanelFallback(app, options.artifactType, options)
   }
 
   const artifactId = `report-${Date.now()}.html`

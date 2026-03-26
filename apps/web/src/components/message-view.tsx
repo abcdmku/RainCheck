@@ -1,5 +1,5 @@
 import type { UIMessage } from '@tanstack/ai'
-import { Check, Copy, RotateCcw, SquarePen, X } from 'lucide-react'
+import { Check, ChevronDown, Copy, RotateCcw, SquarePen, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Streamdown } from 'streamdown'
 
@@ -522,10 +522,49 @@ function AlertsCard({ output }: { output: Record<string, any> }) {
   )
 }
 
-function SourcesCard({ output }: { output: Record<string, any> }) {
+function CollapsibleSources({ citations }: { citations: Array<any> }) {
+  const [open, setOpen] = useState(false)
+
+  if (!citations.length) {
+    return null
+  }
+
   return (
-    <div className="source-card">
-      <SourceChipWrap citations={output.citations ?? []} />
+    <div className={`sources-collapse${open ? ' is-open' : ''}`}>
+      <button
+        className="sources-collapse-trigger"
+        onClick={() => setOpen((prev) => !prev)}
+        type="button"
+      >
+        <span className="sources-collapse-count">{citations.length}</span>
+        <span>sources</span>
+        <ChevronDown className="sources-collapse-chevron" size={14} />
+      </button>
+      {open ? (
+        <div className="sources-collapse-body">
+          {citations.map((citation) => {
+            const label = citation.label ?? citation.sourceId ?? 'Source'
+            if (citation.url) {
+              return (
+                <a
+                  className="source-chip"
+                  href={citation.url}
+                  key={citation.id ?? `${label}-${citation.url}`}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {label}
+                </a>
+              )
+            }
+            return (
+              <span className="source-chip" key={citation.id ?? label}>
+                {label}
+              </span>
+            )
+          })}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -692,7 +731,7 @@ function ToolOutput({
   }
 
   if (part.name === 'generate_citation_bundle') {
-    return <SourcesCard output={part.output} />
+    return <CollapsibleSources citations={part.output.citations ?? []} />
   }
 
   if (part.name === 'synthesize_weather_conclusion') {
@@ -807,6 +846,7 @@ export function MessageView({
   isLastAssistant,
   isStreaming,
   suppressThinkingIndicator,
+  liveStatusLabel,
   onCopy,
   onEditAndResend,
   onRetry,
@@ -816,6 +856,7 @@ export function MessageView({
   isLastAssistant: boolean
   isStreaming?: boolean
   suppressThinkingIndicator?: boolean
+  liveStatusLabel?: string | null
   onCopy: (text: string) => void
   onEditAndResend: (messageId: string, newText: string) => void
   onRetry: () => void
@@ -823,6 +864,9 @@ export function MessageView({
 }) {
   const [editing, setEditing] = useState(false)
   const text = getMessageText(message as any)
+  const citations = Array.isArray((message as any).citations)
+    ? ((message as any).citations as Array<any>)
+    : []
   const visibleParts = message.parts.filter((part: any) =>
     part.type === 'tool-call'
       ? !shouldHideToolOutput(part.name) && !isWeatherConclusion(part.output)
@@ -830,31 +874,55 @@ export function MessageView({
   )
 
   const hasTools = visibleParts.some((part: any) => part.type === 'tool-call')
+  const hasToolCitations = message.parts.some(
+    (part: any) => part.type === 'tool-call' && part.name === 'generate_citation_bundle',
+  )
 
   // For assistant messages: render parts in order (tools first if they come first,
   // text after). We respect the original part order from the stream.
   const isAssistant = message.role === 'assistant'
   const isUser = message.role === 'user'
+  const hasText = text.trim().length > 0
 
   // Detect "thinking" state: assistant message that is streaming with no text yet
   const isThinking =
     isAssistant &&
     isStreaming &&
-    !text &&
+    !hasText &&
     !hasTools &&
     !suppressThinkingIndicator
+  const showLiveStatus =
+    isAssistant &&
+    isStreaming &&
+    !hasText &&
+    !hasTools &&
+    Boolean(liveStatusLabel)
+  const hideEmptyAssistantMessage =
+    isAssistant &&
+    !hasText &&
+    !hasTools &&
+    !isThinking &&
+    !showLiveStatus &&
+    citations.length === 0
 
-  const actionsRow = !editing ? (
+  const canCopy = hasText
+  const canEdit = isUser && hasText
+  const canRetry = isAssistant && isLastAssistant && !isStreaming
+  const hasActions = canCopy || canEdit || canRetry
+
+  const actionsRow = !editing && hasActions ? (
     <div className="message-actions">
-      <button
-        aria-label="Copy message"
-        className="ghost-icon-button"
-        onClick={() => onCopy(text)}
-        type="button"
-      >
-        <Copy size={14} />
-      </button>
-      {isUser ? (
+      {canCopy ? (
+        <button
+          aria-label="Copy message"
+          className="ghost-icon-button"
+          onClick={() => onCopy(text)}
+          type="button"
+        >
+          <Copy size={14} />
+        </button>
+      ) : null}
+      {canEdit ? (
         <button
           aria-label="Edit message"
           className="ghost-icon-button"
@@ -864,7 +932,7 @@ export function MessageView({
           <SquarePen size={14} />
         </button>
       ) : null}
-      {isAssistant && isLastAssistant ? (
+      {canRetry ? (
         <button
           aria-label="Retry response"
           className="ghost-icon-button"
@@ -876,6 +944,10 @@ export function MessageView({
       ) : null}
     </div>
   ) : null
+
+  if (hideEmptyAssistantMessage) {
+    return null
+  }
 
   return (
     <article className={isUser ? 'message-row is-user' : 'message-row'}>
@@ -899,6 +971,20 @@ export function MessageView({
                   <span className="thinking-dot" />
                   <span className="thinking-dot" />
                   <span className="thinking-dot" />
+                </div>
+              ) : null}
+              {showLiveStatus ? (
+                <div
+                  aria-live="polite"
+                  className="assistant-status"
+                  role="status"
+                >
+                  <div className="thinking-indicator">
+                    <span className="thinking-dot" />
+                    <span className="thinking-dot" />
+                    <span className="thinking-dot" />
+                  </div>
+                  <span className="assistant-status-label">{liveStatusLabel}</span>
                 </div>
               ) : null}
 
@@ -932,6 +1018,9 @@ export function MessageView({
                 <div className="message-markdown">
                   <Streamdown>{text}</Streamdown>
                 </div>
+              ) : null}
+              {isAssistant && citations.length > 0 && !hasToolCitations ? (
+                <CollapsibleSources citations={citations} />
               ) : null}
             </>
           )}

@@ -173,7 +173,7 @@ describe('streamGeminiWithToolContext', () => {
     )
   })
 
-  it('falls back to recovered synthesized weather text when a Gemini follow-up call fails', async () => {
+  it('prefers synthesized weather fallback text over a verbose Gemini follow-up answer', async () => {
     chatMock
       .mockReturnValueOnce(
         streamChunks([
@@ -190,10 +190,27 @@ describe('streamGeminiWithToolContext', () => {
             model: 'gemini-3.1-pro-preview',
             timestamp: 2,
             input: {
-              locationQuery: 'central Illinois',
+              locationQuery: 'Yorkville, IL',
             },
-            result:
-              '{"summary":"SPC context shows the primary tornado corridor overlaps central Illinois.","location":{"query":"central Illinois","name":"Illinois, United States","latitude":40,"longitude":-89,"resolvedBy":"open-meteo-geocoding"},"normalizedForecast":{"domain":"severe-context","headline":"SPC context headline"}}',
+            result: JSON.stringify({
+              summary:
+                'SPC keeps northern Illinois in the enhanced severe corridor late Thursday afternoon and evening.',
+              confidence: 0.9,
+              location: {
+                query: 'Yorkville, IL',
+                name: 'Yorkville, Illinois, United States',
+                latitude: 41.64,
+                longitude: -88.45,
+                resolvedBy: 'open-meteo-geocoding',
+              },
+              normalizedForecast: {
+                domain: 'severe-context',
+                headline:
+                  'SPC official severe context should anchor the severe-weather call for Yorkville, Illinois, United States.',
+                keySignals: [],
+                conflicts: [],
+              },
+            }),
           },
           {
             type: 'RUN_FINISHED',
@@ -204,9 +221,16 @@ describe('streamGeminiWithToolContext', () => {
           },
         ]),
       )
-      .mockImplementationOnce(() => {
-        throw new Error('503 high demand')
-      })
+      .mockReturnValueOnce(
+        streamChunks([
+          {
+            type: 'RUN_STARTED',
+            runId: 'run-2',
+            model: 'gemini-3.1-pro-preview',
+            timestamp: 4,
+          },
+        ]),
+      )
 
     const streamed: Array<any> = []
     for await (const chunk of streamGeminiWithToolContext({
@@ -215,7 +239,7 @@ describe('streamGeminiWithToolContext', () => {
         {
           role: 'user',
           content:
-            'in central IL where should i avoid and what time according to the HRRR model because of tornados',
+            'im in yorkville il whats the best plan to follow these upcoming storms to chase a tornado',
         },
       ],
       tools: [
@@ -224,7 +248,7 @@ describe('streamGeminiWithToolContext', () => {
         },
       ],
       systemPrompt: 'You are RainCheck.',
-      conversationId: 'conv-2',
+      conversationId: 'conv-1b',
       middleware: [],
       recoverToolResults: async () => [
         {
@@ -232,29 +256,22 @@ describe('streamGeminiWithToolContext', () => {
           toolName: 'synthesize_weather_conclusion',
           result: {
             bottomLine:
-              'Avoid the central Illinois tornado corridor late afternoon into the evening.',
+              'From Yorkville, treat the late-afternoon into evening severe window as the main chase period and stay ready to adjust south or southwest with later updates.',
             confidence: {
               level: 'medium',
               reason:
-                'SPC severe context and short-range guidance support the same corridor.',
+                'SPC severe context and the short-range guidance point to the same general window, but the exact initiation corridor can still shift.',
             },
             mostLikelyScenario:
-              'The highest tornado risk stays near the warm front as storms mature toward evening.',
+              'Storms develop late in the afternoon and become more tornadic as they mature into the evening.',
             keySignals: [
-              'SPC keeps central Illinois inside the higher-end severe corridor.',
-              'Short-range guidance clusters initiation later in the afternoon.',
+              'SPC keeps northern Illinois in the enhanced severe corridor.',
+              'Short-range guidance supports a later-afternoon to evening storm window.',
             ],
             conflicts: [
-              'Storm mode could stay more linear if forcing outruns destabilization.',
+              'The first supercell corridor can still wobble if the warm front or outflow boundaries shift.',
             ],
-            productCards: [
-              {
-                title: 'SPC Day 2 Convective Outlook',
-              },
-              {
-                title: 'HREF probabilities',
-              },
-            ],
+            productCards: [],
           },
         },
       ],
@@ -262,7 +279,7 @@ describe('streamGeminiWithToolContext', () => {
       streamed.push(chunk)
     }
 
-    expect(chatMock).toHaveBeenCalledTimes(2)
+    expect(chatMock).toHaveBeenCalledTimes(1)
     expect(
       streamed.some(
         (chunk) =>
@@ -275,7 +292,156 @@ describe('streamGeminiWithToolContext', () => {
         (chunk) =>
           chunk.type === 'TEXT_MESSAGE_CONTENT' &&
           String(chunk.content).includes(
-            'Avoid the central Illinois tornado corridor late afternoon into the evening.',
+            'From Yorkville, treat the 4 PM to 10 PM local time severe window as the main chase period',
+          ),
+      ),
+    ).toBe(true)
+  })
+
+  it('continues when recovery adds tool results after an initial Gemini tool-only turn', async () => {
+    chatMock.mockReturnValueOnce(
+      streamChunks([
+        {
+          type: 'RUN_STARTED',
+          runId: 'run-1',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+        },
+        {
+          type: 'TOOL_CALL_START',
+          toolCallId: 'tool-1',
+          toolName: 'resolve_location',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          index: 0,
+        },
+        {
+          type: 'TOOL_CALL_ARGS',
+          toolCallId: 'tool-1',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          delta: '{"locationQuery":"Yorkville, IL"}',
+          args: '{"locationQuery":"Yorkville, IL"}',
+        },
+        {
+          type: 'TOOL_CALL_END',
+          toolCallId: 'tool-1',
+          toolName: 'resolve_location',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          input: {
+            locationQuery: 'Yorkville, IL',
+          },
+        },
+        {
+          type: 'RUN_FINISHED',
+          runId: 'run-1',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          finishReason: 'tool_calls',
+        },
+      ]),
+    )
+
+    const streamed: Array<any> = []
+    for await (const chunk of streamGeminiWithToolContext({
+      adapter: { model: 'gemini-3.1-pro-preview' },
+      messages: [
+        {
+          role: 'user',
+          content:
+            'im in yorkville il whats the best plan to follow these upcoming storms to chase a tornado',
+        },
+      ],
+      tools: [
+        {
+          name: 'resolve_location',
+        },
+      ],
+      systemPrompt: 'You are RainCheck.',
+      conversationId: 'conv-2',
+      middleware: [],
+      recoverToolResults: async () => [
+        {
+          toolCallId: 'recovery-severe',
+          toolName: 'get_severe_context',
+          result: {
+            summary:
+              'SPC keeps northern Illinois in the enhanced severe corridor late Thursday afternoon and evening.',
+            confidence: 0.9,
+            location: {
+              query: 'Yorkville, IL',
+              name: 'Yorkville, Illinois, United States',
+              latitude: 41.64,
+              longitude: -88.45,
+              resolvedBy: 'open-meteo-geocoding',
+            },
+            normalizedForecast: {
+              domain: 'severe-context',
+              headline:
+                'SPC official severe context should anchor the severe-weather call for Yorkville, Illinois, United States.',
+              mostLikelyScenario:
+                'Discrete storms are most likely late afternoon into the evening.',
+              alternateScenarios: [],
+              confidence: 'medium',
+              likelihood: 'medium',
+              keySignals: [],
+              conflicts: [],
+              failureModes: [],
+              whatWouldChange: [],
+              productCards: [],
+              recommendedProductIds: [],
+            },
+          },
+        },
+        {
+          toolCallId: 'recovery-synthesis',
+          toolName: 'synthesize_weather_conclusion',
+          result: {
+            bottomLine:
+              'From Yorkville, treat late afternoon into evening as the main chase window and stay flexible inside the broader northern Illinois severe corridor.',
+            confidence: {
+              level: 'medium',
+              reason:
+                'SPC severe context supports a later-afternoon into evening chase window, but the exact storm corridor can still shift.',
+            },
+            mostLikelyScenario:
+              'Storms become most chase-worthy late afternoon into evening if cells stay discrete before clustering later.',
+            keySignals: [
+              'SPC keeps northern Illinois in the enhanced severe corridor.',
+            ],
+            conflicts: [
+              'The first supercell corridor can still wobble if boundaries shift.',
+            ],
+            productCards: [],
+          },
+        },
+      ],
+    })) {
+      streamed.push(chunk)
+    }
+
+    expect(chatMock).toHaveBeenCalledTimes(1)
+    expect(
+      streamed.some(
+        (chunk) =>
+          chunk.type === 'TOOL_CALL_END' &&
+          chunk.toolName === 'get_severe_context',
+      ),
+    ).toBe(true)
+    expect(
+      streamed.some(
+        (chunk) =>
+          chunk.type === 'TOOL_CALL_END' &&
+          chunk.toolName === 'synthesize_weather_conclusion',
+      ),
+    ).toBe(true)
+    expect(
+      streamed.some(
+        (chunk) =>
+          chunk.type === 'TEXT_MESSAGE_CONTENT' &&
+          String(chunk.content).includes(
+            'From Yorkville, treat 4 PM to 10 PM local time as the main chase window',
           ),
       ),
     ).toBe(true)

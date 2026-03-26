@@ -45,6 +45,8 @@ describe('weather model guidance', () => {
     const result = await getShortRangeGuidance({} as never, 'Oklahoma City, OK')
 
     expect(result.location.name).toBe('Oklahoma City, OK')
+    expect(result.summary).toContain('Short-range guidance source context is available')
+    expect(result.summary).not.toContain('National Blend of Models</title>')
     expect((result.normalizedForecast.productCards ?? []).map((card) => card.id)).toEqual([
       'href',
       'hrrr',
@@ -64,6 +66,8 @@ describe('weather model guidance', () => {
   it('returns global guidance with GFS, GEFS, and ECMWF cards', async () => {
     const result = await getGlobalGuidance({} as never, 'Oklahoma City, OK')
 
+    expect(result.summary).toContain('Global guidance source context is available')
+    expect(result.summary).not.toContain('ECMWF Open Data</title>')
     expect((result.normalizedForecast.productCards ?? []).map((card) => card.id)).toEqual([
       'ecmwf-open-data',
       'gefs',

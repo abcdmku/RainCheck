@@ -32,6 +32,10 @@ const artifactTerms = [
   'chart',
   'plot',
   'artifact',
+  'map',
+  'visual',
+  'graphic',
+  'image',
   'skewt',
   'skew-t',
   'meteogram',
@@ -232,6 +236,68 @@ const broadStormLocatorTerms = [
   'most severe storms happening',
 ]
 
+const conversationFollowUpTerms = [
+  'what about',
+  'how about',
+  'show on a map',
+  'show me on a map',
+  'put that on a map',
+  'mark the times',
+  'mark times',
+  'mark where',
+  'show that',
+  'show me that',
+  'can you show',
+  'can you put',
+  'where should i go',
+  'where should i be',
+  'when should i be there',
+  'should i be there',
+]
+
+const coreWeatherTerms = [
+  'weather',
+  'forecast',
+  'current',
+  'temperature',
+  'wind',
+  'humidity',
+  'rain',
+  'snow',
+  'storm',
+  'storms',
+  'lightning',
+  'outlook',
+  'warning',
+  'watch',
+  'advisory',
+  'radar',
+  'satellite',
+  'tornado',
+  'hail',
+  'flood',
+  'cloud',
+]
+
+const timeSignalTerms = [
+  'today',
+  'tonight',
+  'tomorrow',
+  'this afternoon',
+  'this evening',
+  'overnight',
+  'weekend',
+  'this week',
+  'next week',
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+]
+
 function inferTimeHorizonHours(input: string) {
   const nextDayMatch = input.match(/\bnext\s+([1-9]|10)\s*[- ]?days?\b/)
   if (nextDayMatch?.[1]) {
@@ -313,7 +379,13 @@ function buildClassification(
   const defaultNeedsArtifact =
     artifactRequested ||
     researchRequested ||
-    ['radar', 'satellite', 'upper-air', 'storm-history', 'radar-analysis'].includes(intent)
+    [
+      'radar',
+      'satellite',
+      'upper-air',
+      'storm-history',
+      'radar-analysis',
+    ].includes(intent)
   const needsArtifact = options.needsArtifact ?? defaultNeedsArtifact
 
   const defaultTaskClass =
@@ -357,9 +429,160 @@ function isComparisonPrompt(input: string) {
   return includesAny(input, ['compare', 'comparison', 'versus', 'vs'])
 }
 
+function extractMessageText(message: any) {
+  if (!message) {
+    return ''
+  }
+
+  if (typeof message.content === 'string') {
+    return message.content
+  }
+
+  if (!Array.isArray(message.parts)) {
+    return ''
+  }
+
+  return message.parts
+    .filter((part: any) => part?.type === 'text')
+    .map((part: any) => String(part.content ?? ''))
+    .join('')
+}
+
+function latestUserMessageIndex(messages: Array<any>) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') {
+      return index
+    }
+  }
+
+  return -1
+}
+
+function hasTimeSignal(input: string) {
+  return (
+    includesAny(input, timeSignalTerms) ||
+    /\bnext\s+([1-9]|10)\s*[- ]?days?\b/.test(input) ||
+    /\b([1-9]|10)\s*[- ]?days?\b/.test(input) ||
+    /\bday\s*([1-9]|10)\b/.test(input)
+  )
+}
+
+function isExplicitWeatherMessage(
+  input: string,
+  classification: RequestClassification,
+) {
+  return (
+    includesAny(input, coreWeatherTerms) ||
+    (classification.intent !== 'current-conditions' &&
+      !isConversationFollowUp(input))
+  )
+}
+
+function isConversationFollowUp(input: string) {
+  return (
+    includesAny(input, conversationFollowUpTerms) ||
+    (includesAny(input, artifactTerms) && !includesAny(input, coreWeatherTerms))
+  )
+}
+
+function previousExplicitUserClassification(
+  messages: Array<any>,
+  latestUserIndex: number,
+) {
+  for (let index = latestUserIndex - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role !== 'user') {
+      continue
+    }
+
+    const text = extractMessageText(messages[index]).trim()
+    if (!text) {
+      continue
+    }
+
+    const classification = classifyRequest(text)
+    if (
+      isExplicitWeatherMessage(
+        normalizeClassificationInput(text),
+        classification,
+      )
+    ) {
+      return classification
+    }
+  }
+
+  return null
+}
+
+function mergeConversationContext(
+  input: string,
+  latestClassification: RequestClassification,
+  previousClassification: RequestClassification,
+) {
+  const artifactRequested = includesAny(input, artifactTerms)
+
+  return requestClassificationSchema.parse({
+    ...previousClassification,
+    taskClass:
+      previousClassification.taskClass === 'research' || artifactRequested
+        ? 'research'
+        : previousClassification.taskClass,
+    timeHorizonHours: hasTimeSignal(input)
+      ? latestClassification.timeHorizonHours
+      : previousClassification.timeHorizonHours,
+    needsArtifact: previousClassification.needsArtifact || artifactRequested,
+  })
+}
+
+export function classifyConversationRequest(messages: Array<any>) {
+  const latestUserIndex = latestUserMessageIndex(messages)
+  if (latestUserIndex === -1) {
+    return classifyRequest('')
+  }
+
+  const latestText = extractMessageText(messages[latestUserIndex]).trim()
+  const latestClassification = classifyRequest(latestText)
+  const normalized = normalizeClassificationInput(latestText)
+  const previousClassification = previousExplicitUserClassification(
+    messages,
+    latestUserIndex,
+  )
+
+  if (
+    previousClassification &&
+    latestClassification.intent === 'current-conditions' &&
+    isConversationFollowUp(normalized)
+  ) {
+    return mergeConversationContext(
+      normalized,
+      latestClassification,
+      previousClassification,
+    )
+  }
+
+  if (
+    previousClassification &&
+    isConversationFollowUp(normalized) &&
+    !includesAny(normalized, coreWeatherTerms)
+  ) {
+    return mergeConversationContext(
+      normalized,
+      latestClassification,
+      previousClassification,
+    )
+  }
+
+  return requestClassificationSchema.parse({
+    ...latestClassification,
+    needsArtifact:
+      latestClassification.needsArtifact ||
+      includesAny(normalized, artifactTerms),
+  })
+}
+
 export function classifyRequest(message: string): RequestClassification {
   const normalized = normalizeClassificationInput(message)
   const timeHorizonHours = inferTimeHorizonHours(normalized)
+  const artifactRequested = includesAny(normalized, artifactTerms)
   const broadStormLocator =
     includesAny(normalized, broadStormLocatorTerms) ||
     ((normalized.includes('where are') || normalized.includes('where will')) &&
@@ -372,7 +595,7 @@ export function classifyRequest(message: string): RequestClassification {
       taskClass: 'research',
       timeHorizonHours,
       locationRequired: false,
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
@@ -414,13 +637,14 @@ export function classifyRequest(message: string): RequestClassification {
   if (includesAny(normalized, hydrologyTerms)) {
     return buildClassification('hydrology', normalized, {
       taskClass: 'research',
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
   if (includesAny(normalized, radarTerms)) {
     return buildClassification(
-      includesAny(normalized, researchTerms) || includesAny(normalized, artifactTerms)
+      includesAny(normalized, researchTerms) ||
+        includesAny(normalized, artifactTerms)
         ? 'radar-analysis'
         : 'radar',
       normalized,
@@ -435,22 +659,19 @@ export function classifyRequest(message: string): RequestClassification {
     return buildClassification('mrms', normalized)
   }
 
-  if (
-    isComparisonPrompt(normalized) &&
-    hasMultipleModelMentions(normalized)
-  ) {
+  if (isComparisonPrompt(normalized) && hasMultipleModelMentions(normalized)) {
     if (includesAny(normalized, globalModelTerms) || timeHorizonHours > 48) {
       return buildClassification('global-model', normalized, {
         taskClass: 'research',
         timeHorizonHours,
-        needsArtifact: false,
+        needsArtifact: artifactRequested,
       })
     }
 
     return buildClassification('short-range-model', normalized, {
       taskClass: 'research',
       timeHorizonHours,
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
@@ -459,39 +680,40 @@ export function classifyRequest(message: string): RequestClassification {
       return buildClassification('global-model', normalized, {
         taskClass: 'research',
         timeHorizonHours,
-        needsArtifact: false,
+        needsArtifact: artifactRequested,
       })
     }
 
     return buildClassification('short-range-model', normalized, {
       taskClass: 'research',
       timeHorizonHours,
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
   const severeShortRangeAnalysis =
-    includesAny(normalized, shortRangeModelTerms) && includesSevereSignal(normalized)
+    includesAny(normalized, shortRangeModelTerms) &&
+    includesSevereSignal(normalized)
 
   if (severeShortRangeAnalysis) {
     return buildClassification('severe-weather', normalized, {
       taskClass: 'research',
       timeHorizonHours,
       locationRequired: !broadStormLocator,
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
   if (includesAny(normalized, blendAnalysisTerms)) {
     return buildClassification('blend-analysis', normalized, {
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
   if (includesAny(normalized, shortRangeModelTerms)) {
     return buildClassification('short-range-model', normalized, {
       taskClass: hasMultipleModelMentions(normalized) ? 'research' : 'chat',
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
@@ -499,7 +721,7 @@ export function classifyRequest(message: string): RequestClassification {
     return buildClassification('global-model', normalized, {
       taskClass: 'research',
       timeHorizonHours,
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
@@ -510,7 +732,7 @@ export function classifyRequest(message: string): RequestClassification {
   if (includesAny(normalized, precipitationTerms)) {
     return buildClassification('precipitation', normalized, {
       taskClass: 'research',
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
@@ -520,21 +742,21 @@ export function classifyRequest(message: string): RequestClassification {
         broadStormLocator || timeHorizonHours >= 72 ? 'research' : 'chat',
       timeHorizonHours,
       locationRequired: !broadStormLocator,
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
   if (includesAny(normalized, alertTerms)) {
     return buildClassification('alerts', normalized, {
       timeHorizonHours: 12,
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
   if (includesAny(normalized, [...researchTerms, 'weather analysis'])) {
     return buildClassification('weather-analysis', normalized, {
       taskClass: 'research',
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
       locationRequired: false,
     })
   }
@@ -550,13 +772,13 @@ export function classifyRequest(message: string): RequestClassification {
     ])
   ) {
     return buildClassification('forecast', normalized, {
-      needsArtifact: false,
+      needsArtifact: artifactRequested,
     })
   }
 
   return buildClassification('current-conditions', normalized, {
     taskClass: 'chat',
-    needsArtifact: false,
+    needsArtifact: artifactRequested,
     timeHorizonHours: 6,
   })
 }

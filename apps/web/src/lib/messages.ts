@@ -21,6 +21,8 @@ export function mapRecordsToUiMessages(
 
       return part as any
     }),
+    citations: message.citations,
+    artifacts: message.artifacts,
     createdAt: new Date(message.createdAt),
   }))
 }

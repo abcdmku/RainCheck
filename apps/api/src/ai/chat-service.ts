@@ -10,7 +10,7 @@ import type { FastifyInstance } from 'fastify'
 import { getConversation, saveMessage } from '../services/conversations-service'
 import { getProviderKeyMap, getSettings } from '../services/settings-service'
 import { buildAdapter } from './adapters'
-import { classifyRequest } from './classify-request'
+import { classifyConversationRequest } from './classify-request'
 import { chooseRoute } from './provider-routing'
 import { buildSystemPrompt } from './system-prompt'
 import { buildServerTools } from './tools'
@@ -18,6 +18,7 @@ import {
   buildWeatherFallbackText,
   recoverWeatherToolResults,
 } from './weather-recovery'
+import { normalizeTimingLanguage } from '../weather/timing-language'
 
 function extractTextContent(message: any) {
   if (!message) {
@@ -55,6 +56,12 @@ export type CompletedToolResult = {
   result: unknown
 }
 
+function hasSynthesisToolResult(toolResults: Array<CompletedToolResult>) {
+  return toolResults.some(
+    (toolResult) => toolResult.toolName === 'synthesize_weather_conclusion',
+  )
+}
+
 function stringifyToolResult(result: unknown) {
   try {
     return typeof result === 'string' ? result : JSON.stringify(result)
@@ -67,12 +74,29 @@ function fallbackMessageId() {
   return `fallback-${Date.now()}`
 }
 
+function duplicateRequestRunId() {
+  return `duplicate-${Date.now()}`
+}
+
+function fallbackRunId() {
+  return `fallback-run-${Date.now()}`
+}
+
 async function* streamTextFallback(
   text: string,
   model: string,
 ): AsyncIterable<StreamChunk> {
+  const normalizedText = normalizeTimingLanguage(text)
   const timestamp = Date.now()
   const messageId = fallbackMessageId()
+  const runId = fallbackRunId()
+
+  yield {
+    type: 'RUN_STARTED',
+    runId,
+    model,
+    timestamp,
+  } satisfies StreamChunk
 
   yield {
     type: 'TEXT_MESSAGE_START',
@@ -87,8 +111,8 @@ async function* streamTextFallback(
     messageId,
     model,
     timestamp,
-    delta: text,
-    content: text,
+    delta: normalizedText,
+    content: normalizedText,
   } satisfies StreamChunk
 
   yield {
@@ -97,6 +121,34 @@ async function* streamTextFallback(
     model,
     timestamp,
   } satisfies StreamChunk
+
+  yield {
+    type: 'RUN_FINISHED',
+    runId,
+    model,
+    timestamp: Date.now(),
+    finishReason: 'stop',
+  } satisfies StreamChunk
+}
+
+async function* streamDuplicateCompletion(
+  model: string,
+): AsyncIterable<StreamChunk> {
+  yield {
+    type: 'RUN_FINISHED',
+    runId: duplicateRequestRunId(),
+    model,
+    timestamp: Date.now(),
+    finishReason: 'stop',
+  } satisfies StreamChunk
+}
+
+function isTextMessageChunk(chunk: StreamChunk) {
+  return (
+    chunk.type === 'TEXT_MESSAGE_START' ||
+    chunk.type === 'TEXT_MESSAGE_CONTENT' ||
+    chunk.type === 'TEXT_MESSAGE_END'
+  )
 }
 
 export function prepareMessagesForProvider(
@@ -205,6 +257,28 @@ export function buildGeminiToolContextMessage(
   ].join('\n')
 }
 
+function buildGeminiNextMessages(
+  workingMessages: Array<any>,
+  assistantText: string,
+  toolResults: Array<CompletedToolResult>,
+) {
+  const nextMessages = [...workingMessages]
+
+  if (assistantText.trim()) {
+    nextMessages.push({
+      role: 'assistant',
+      content: assistantText,
+    })
+  }
+
+  nextMessages.push({
+    role: 'user',
+    content: buildGeminiToolContextMessage(toolResults),
+  })
+
+  return nextMessages
+}
+
 const readOnlyWeatherToolNames = [
   'resolve_location',
   'get_current_conditions',
@@ -259,6 +333,78 @@ function extractResultSourceTags(result: unknown) {
   return [...sourceIds]
 }
 
+function extractClientMessageId(message: any) {
+  if (Array.isArray(message?.parts)) {
+    const textPart = message.parts.find(
+      (part: any) =>
+        part?.type === 'text' &&
+        typeof part.clientMessageId === 'string' &&
+        part.clientMessageId.trim(),
+    )
+
+    if (typeof textPart?.clientMessageId === 'string') {
+      return textPart.clientMessageId.trim()
+    }
+  }
+
+  if (typeof message?.id === 'string' && message.id.trim()) {
+    return message.id.trim()
+  }
+
+  return null
+}
+
+function hasVisibleAssistantOutput(message: any) {
+  if (extractTextContent(message).trim()) {
+    return true
+  }
+
+  if (Array.isArray(message?.artifacts) && message.artifacts.length > 0) {
+    return true
+  }
+
+  return Array.isArray(message?.parts)
+    ? message.parts.some((part: any) => part?.type === 'tool-call')
+    : false
+}
+
+function findPersistedUserMessageIndex(
+  messages: Array<any>,
+  clientMessageId: string,
+) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role !== 'user') {
+      continue
+    }
+
+    if (extractClientMessageId(message) === clientMessageId) {
+      return index
+    }
+  }
+
+  return -1
+}
+
+function wasPersistedUserMessageAnswered(
+  messages: Array<any>,
+  userIndex: number,
+) {
+  for (let index = userIndex + 1; index < messages.length; index += 1) {
+    const message = messages[index]
+
+    if (message?.role === 'user') {
+      return false
+    }
+
+    if (message?.role === 'assistant' && hasVisibleAssistantOutput(message)) {
+      return true
+    }
+  }
+
+  return false
+}
+
 function buildGeminiSystemPrompts(systemPrompt: string) {
   return [
     systemPrompt,
@@ -287,6 +433,7 @@ export async function* streamGeminiWithToolContext(input: {
     let assistantText = ''
     const toolInputs = new Map<string, unknown>()
     const completedToolResults: Array<CompletedToolResult> = []
+    const bufferedTextChunks: Array<StreamChunk> = []
     try {
       const stream = chat({
         adapter: input.adapter,
@@ -299,8 +446,17 @@ export async function* streamGeminiWithToolContext(input: {
       })
 
       for await (const chunk of stream) {
-        if (chunk.type === 'TEXT_MESSAGE_CONTENT' && chunk.delta) {
-          assistantText += chunk.delta
+        if (chunk.type === 'TEXT_MESSAGE_CONTENT') {
+          if (chunk.delta) {
+            assistantText += chunk.delta
+          }
+          bufferedTextChunks.push(chunk)
+          continue
+        }
+
+        if (isTextMessageChunk(chunk)) {
+          bufferedTextChunks.push(chunk)
+          continue
         }
 
         if (chunk.type === 'TOOL_CALL_END' && chunk.input !== undefined) {
@@ -352,24 +508,75 @@ export async function* streamGeminiWithToolContext(input: {
     recoveredToolResults.push(...completedToolResults)
 
     if (completedToolResults.length === 0) {
+      const recoveryResults =
+        (await input.recoverToolResults?.([...recoveredToolResults])) ?? []
+      recoveredToolResults.push(...recoveryResults)
+
+      for (const toolResult of recoveryResults) {
+        yield {
+          type: 'TOOL_CALL_END',
+          toolCallId: toolResult.toolCallId,
+          toolName: toolResult.toolName,
+          model: String(input.adapter?.model ?? 'gemini'),
+          timestamp: Date.now(),
+          input: toolResult.input,
+          result: stringifyToolResult(toolResult.result),
+        } satisfies StreamChunk
+      }
+
+      const fallbackText = buildWeatherFallbackText(recoveredToolResults)
+      if (fallbackText) {
+        yield* streamTextFallback(
+          fallbackText,
+          String(input.adapter?.model ?? 'gemini'),
+        )
+        return
+      }
+
+      if (recoveryResults.length > 0) {
+        workingMessages = buildGeminiNextMessages(
+          workingMessages,
+          assistantText,
+          [...recoveredToolResults],
+        )
+        continue
+      }
+
+      for (const chunk of bufferedTextChunks) {
+        yield chunk
+      }
+
       return
     }
 
-    const nextMessages = [...workingMessages]
+    const recoveryResults =
+      (await input.recoverToolResults?.([...recoveredToolResults])) ?? []
+    recoveredToolResults.push(...recoveryResults)
 
-    if (assistantText.trim()) {
-      nextMessages.push({
-        role: 'assistant',
-        content: assistantText,
-      })
+    for (const toolResult of recoveryResults) {
+      yield {
+        type: 'TOOL_CALL_END',
+        toolCallId: toolResult.toolCallId,
+        toolName: toolResult.toolName,
+        model: String(input.adapter?.model ?? 'gemini'),
+        timestamp: Date.now(),
+        input: toolResult.input,
+        result: stringifyToolResult(toolResult.result),
+      } satisfies StreamChunk
     }
 
-    nextMessages.push({
-      role: 'user',
-      content: buildGeminiToolContextMessage(completedToolResults),
-    })
+    const fallbackText = buildWeatherFallbackText(recoveredToolResults)
+    if (fallbackText && hasSynthesisToolResult(recoveredToolResults)) {
+      yield* streamTextFallback(
+        fallbackText,
+        String(input.adapter?.model ?? 'gemini'),
+      )
+      return
+    }
 
-    workingMessages = nextMessages
+    workingMessages = buildGeminiNextMessages(workingMessages, assistantText, [
+      ...recoveredToolResults,
+    ])
   }
 
   const synthesisStream = chat({
@@ -427,7 +634,10 @@ function buildMiddleware(app: FastifyInstance) {
         app.log.info({ requestId: ctx.requestId }, 'chat started')
       },
       onBeforeToolCall(_ctx: any, info: any) {
-        app.log.info({ tool: info.toolName, args: info.args }, 'tool call started')
+        app.log.info(
+          { tool: info.toolName, args: info.args },
+          'tool call started',
+        )
       },
       onAfterToolCall(_ctx: any, info: any) {
         app.log.info(
@@ -462,26 +672,65 @@ async function persistIncomingUserMessage(
   const lastUserMessage = [...messages]
     .reverse()
     .find((message) => message.role === 'user')
-  const userContent = extractTextContent(lastUserMessage)
+  const userContent = extractTextContent(lastUserMessage).trim()
+  const clientMessageId = extractClientMessageId(lastUserMessage)
   if (!userContent) {
-    return
+    return {
+      alreadyAnswered: false,
+      clientMessageId,
+      text: '',
+    }
   }
 
   const conversation = await getConversation(app, conversationId)
+  if (conversation && clientMessageId) {
+    const duplicateUserIndex = findPersistedUserMessageIndex(
+      conversation.messages,
+      clientMessageId,
+    )
+
+    if (duplicateUserIndex >= 0) {
+      return {
+        alreadyAnswered: wasPersistedUserMessageAnswered(
+          conversation.messages,
+          duplicateUserIndex,
+        ),
+        clientMessageId,
+        text: userContent,
+      }
+    }
+  }
+
   const lastPersisted = conversation?.messages.at(-1)
   if (
     lastPersisted?.role === 'user' &&
-    lastPersisted.content.trim() === userContent.trim()
+    lastPersisted.content.trim() === userContent
   ) {
-    return
+    return {
+      alreadyAnswered: false,
+      clientMessageId,
+      text: userContent,
+    }
   }
 
   await saveMessage(app, {
     conversationId,
     role: 'user',
     content: userContent,
-    parts: [{ type: 'text', content: userContent }],
+    parts: [
+      {
+        type: 'text',
+        content: userContent,
+        ...(clientMessageId ? { clientMessageId } : {}),
+      },
+    ],
   })
+
+  return {
+    alreadyAnswered: false,
+    clientMessageId,
+    text: userContent,
+  }
 }
 
 function collectAssistantArtifacts(
@@ -533,9 +782,19 @@ function collectAssistantArtifacts(
 function collectAssistantCitations(
   toolOutputs: Array<{ toolName: string; result: any }>,
 ) {
+  const preferredOutputs = toolOutputs.some(
+    (entry) =>
+      entry.toolName === 'synthesize_weather_conclusion' &&
+      Array.isArray(entry.result?.citations) &&
+      entry.result.citations.length > 0,
+  )
+    ? toolOutputs.filter(
+        (entry) => entry.toolName === 'synthesize_weather_conclusion',
+      )
+    : toolOutputs
   const citations: Array<Record<string, unknown>> = []
 
-  for (const entry of toolOutputs) {
+  for (const entry of preferredOutputs) {
     const result = entry.result
     if (Array.isArray(result)) {
       for (const item of result) {
@@ -685,13 +944,17 @@ export async function handleChatRequest(
     }
   },
 ) {
-  await persistIncomingUserMessage(app, body.conversationId, body.messages)
+  const incomingUserTurn = await persistIncomingUserMessage(
+    app,
+    body.conversationId,
+    body.messages,
+  )
 
   const latestMessage = [...body.messages]
     .reverse()
     .find((message) => message.role === 'user')
-  const latestText = extractTextContent(latestMessage)
-  const classification = classifyRequest(latestText)
+  const latestText = incomingUserTurn.text || extractTextContent(latestMessage)
+  const classification = classifyConversationRequest(body.messages)
   const settings = await getSettings(app)
   const keyMap = await getProviderKeyMap(app)
   const route = chooseRoute({
@@ -702,6 +965,14 @@ export async function handleChatRequest(
     requestedProvider: body.provider,
     requestedModel: body.model,
   })
+
+  if (incomingUserTurn.alreadyAnswered) {
+    return {
+      route,
+      classification,
+      stream: streamDuplicateCompletion(route.model),
+    }
+  }
 
   const adapter = await buildAdapter(app, route)
   const tools = buildServerTools(app, classification)
