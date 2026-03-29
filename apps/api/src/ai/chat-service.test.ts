@@ -98,6 +98,48 @@ describe('prepareMessagesForProvider', () => {
     ])
   })
 
+  it('strips hidden weather comparison context before sending messages to providers', () => {
+    const messages = prepareMessagesForProvider(
+      [
+        {
+          role: 'assistant',
+          content: 'Paxton currently looks more favorable.',
+          parts: [
+            {
+              type: 'text',
+              content: 'Paxton currently looks more favorable.',
+            },
+            {
+              type: 'weather-comparison-context',
+              context: {
+                workflow: 'severe-weather',
+                answerMode: 'compare',
+                candidateMode: 'named',
+                rankLimit: 2,
+                rankingObjective: 'severe-favorability',
+                candidates: [],
+              },
+            },
+          ],
+        },
+      ],
+      'openai',
+    )
+
+    expect(messages).toEqual([
+      {
+        role: 'assistant',
+        content: 'Paxton currently looks more favorable.',
+        parts: [
+          {
+            type: 'text',
+            content: 'Paxton currently looks more favorable.',
+          },
+        ],
+      },
+    ])
+  })
+
   it('strips historical tool parts for non-gemini providers too', () => {
     const messages = prepareMessagesForProvider(
       [
@@ -280,7 +322,9 @@ describe('collectAssistantCitations', () => {
         kind: 'page',
       }),
     ])
-    expect(citations.some((citation) => citation.kind === 'derived')).toBe(false)
+    expect(citations.some((citation) => citation.kind === 'derived')).toBe(
+      false,
+    )
   })
 
   it('uses contextUrl as a persisted fallback when a citation has no direct url', () => {
@@ -295,7 +339,8 @@ describe('collectAssistantCitations', () => {
               sourceId: 'nexrad',
               productId: 'nexrad-storm-structure',
               kind: 'image',
-              contextUrl: 'https://radar.weather.gov/ridge/standard/CONUS_0.gif',
+              contextUrl:
+                'https://radar.weather.gov/ridge/standard/CONUS_0.gif',
             },
           ],
         },
@@ -323,8 +368,7 @@ describe('collectAssistantCitations', () => {
               productId: 'nexrad-loop',
               kind: 'image',
               url: 'https://radar.weather.gov/ridge/standard/CONUS_loop.gif',
-              displayUrl:
-                '/api/artifacts/radar-loop-20260324-1200.html',
+              displayUrl: '/api/artifacts/radar-loop-20260324-1200.html',
             },
             {
               id: 'nexrad:nexrad-loop',

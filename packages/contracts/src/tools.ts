@@ -14,6 +14,8 @@ import {
   reportOutlineSchema,
   synthesisBundleSchema,
   synthesizeWeatherRequestSchema,
+  weatherComparisonBundleSchema,
+  weatherComparisonToolRequestSchema,
   weatherToolEnvelopeSchema,
 } from './weather'
 
@@ -225,6 +227,14 @@ export const synthesizeWeatherConclusionToolDef = toolDefinition({
     'Synthesize derived weather evidence into one expert judgment with confidence, uncertainty, supporting signals, bust risks, and recommended cards or artifacts.',
   inputSchema: synthesizeWeatherRequestSchema,
   outputSchema: synthesisBundleSchema,
+})
+
+export const compareWeatherCandidatesToolDef = toolDefinition({
+  name: 'compare_weather_candidates',
+  description:
+    'Compare or rank multiple weather candidates using the smallest relevant weather context for each place, then return one ranked conclusion in natural prose-ready structure.',
+  inputSchema: weatherComparisonToolRequestSchema,
+  outputSchema: weatherComparisonBundleSchema,
 })
 
 export const generateCitationBundleToolDef = toolDefinition({

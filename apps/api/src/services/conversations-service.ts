@@ -110,6 +110,8 @@ export async function getConversation(
         createdAt: message.createdAt,
         provider: message.provider,
         model: message.model,
+        transport: message.transport,
+        source: message.source,
       }),
     ),
   }
@@ -189,11 +191,14 @@ export async function saveMessage(
     artifacts?: Array<unknown>
     provider?: string | null
     model?: string | null
+    transport?: 'api' | 'local-cli' | null
+    source?: 'shared-env' | 'local-api-key' | 'desktop-local-cli' | null
   },
 ) {
   const now = nowIso()
+  const id = makeId('msg')
   await app.raincheckDb.insert(messagesTable).values({
-    id: makeId('msg'),
+    id,
     conversationId: input.conversationId,
     role: input.role,
     content: input.content,
@@ -202,6 +207,8 @@ export async function saveMessage(
     artifactsJson: JSON.stringify(input.artifacts ?? []),
     provider: input.provider ?? null,
     model: input.model ?? null,
+    transport: input.transport ?? null,
+    source: input.source ?? null,
     createdAt: now,
   })
 
@@ -215,4 +222,19 @@ export async function saveMessage(
           : undefined,
     })
     .where(eq(conversationsTable.id, input.conversationId))
+
+  return messageRecordSchema.parse({
+    id,
+    conversationId: input.conversationId,
+    role: input.role,
+    content: input.content,
+    parts: input.parts ?? [],
+    citations: zodArrayParse(input.citations ?? [], citationSchema),
+    artifacts: zodArrayParse(input.artifacts ?? [], artifactManifestSchema),
+    createdAt: now,
+    provider: input.provider ?? null,
+    model: input.model ?? null,
+    transport: input.transport ?? null,
+    source: input.source ?? null,
+  })
 }

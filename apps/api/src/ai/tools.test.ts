@@ -12,6 +12,9 @@ describe('buildServerTools', () => {
       locationRequired: true,
       needsArtifact: true,
       chaseGuidanceLevel: 'general-target',
+      answerMode: 'single',
+      candidateMode: 'named',
+      rankLimit: 1,
     })
 
     const toolNames = tools.map((tool: any) => tool.name)
@@ -30,10 +33,31 @@ describe('buildServerTools', () => {
       locationRequired: true,
       needsArtifact: false,
       chaseGuidanceLevel: 'general-target',
+      answerMode: 'single',
+      candidateMode: 'named',
+      rankLimit: 1,
     })
 
     expect(tools.map((tool: any) => tool.name)).not.toContain(
       'generate_weather_artifact',
+    )
+  })
+
+  it('adds global guidance for week-scale severe-weather research', () => {
+    const tools = buildServerTools({} as any, {
+      taskClass: 'research',
+      intent: 'severe-weather',
+      timeHorizonHours: 240,
+      locationRequired: false,
+      needsArtifact: false,
+      chaseGuidanceLevel: 'analysis-only',
+      answerMode: 'single',
+      candidateMode: 'named',
+      rankLimit: 1,
+    })
+
+    expect(tools.map((tool: any) => tool.name)).toContain(
+      'derive_global_weather',
     )
   })
 
@@ -46,6 +70,9 @@ describe('buildServerTools', () => {
         locationRequired: true,
         needsArtifact: false,
         chaseGuidanceLevel: 'general-target',
+        answerMode: 'single',
+        candidateMode: 'named',
+        rankLimit: 1,
       }),
     )
 
@@ -76,9 +103,36 @@ describe('buildServerTools', () => {
     const synthesizeTool = targetTools.find(
       (tool: any) => tool.name === 'synthesize_weather_conclusion',
     )
-    expect((synthesizeTool as any)?.inputSchema?.properties?.evidenceProducts)
-      .toMatchObject({
-        type: 'array',
-      })
+    expect(
+      (synthesizeTool as any)?.inputSchema?.properties?.evidenceProducts,
+    ).toMatchObject({
+      type: 'array',
+    })
+  })
+
+  it('exposes the compare tool for multi-location ranking workflows', () => {
+    const tools = sanitizeToolsForGemini(
+      buildServerTools({} as any, {
+        taskClass: 'chat',
+        intent: 'forecast',
+        timeHorizonHours: 24,
+        locationRequired: false,
+        needsArtifact: false,
+        chaseGuidanceLevel: 'analysis-only',
+        answerMode: 'rank',
+        candidateMode: 'discovered',
+        rankLimit: 5,
+        rankingObjective: 'pleasant-weather',
+      }),
+    )
+
+    const compareTool = tools.find(
+      (tool: any) => tool.name === 'compare_weather_candidates',
+    )
+
+    expect(compareTool).toBeDefined()
+    const inputSchemaText = JSON.stringify((compareTool as any)?.inputSchema)
+    expect(inputSchemaText).not.toContain('"const"')
+    expect(inputSchemaText).not.toContain('"oneOf"')
   })
 })

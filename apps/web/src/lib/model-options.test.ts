@@ -3,7 +3,20 @@ import { getAvailableModelOptions } from './model-options'
 
 describe('getAvailableModelOptions', () => {
   it('includes the full Gemini text model set', () => {
-    const options = getAvailableModelOptions(['gemini'])
+    const options = getAvailableModelOptions({
+      availableProviders: ['gemini'],
+      providerConnections: [
+        {
+          providerId: 'gemini',
+          mode: 'env',
+          configured: true,
+          available: true,
+          model: null,
+          updatedAt: null,
+          localCli: null,
+        },
+      ],
+    })
 
     expect(options).toEqual([
       expect.objectContaining({
@@ -43,5 +56,68 @@ describe('getAvailableModelOptions', () => {
         provider: 'gemini',
       }),
     ])
+  })
+
+  it('adds native desktop local CLI models when Codex is authenticated', () => {
+    const options = getAvailableModelOptions({
+      availableProviders: ['openai'],
+      providerConnections: [
+        {
+          providerId: 'openai',
+          mode: 'env',
+          configured: true,
+          available: true,
+          model: null,
+          updatedAt: null,
+          localCli: null,
+        },
+      ],
+      desktopProviderConnections: [
+        {
+          providerId: 'openai',
+          connected: true,
+          configured: true,
+          model: null,
+          updatedAt: null,
+          localCli: {
+            command: 'codex',
+            detected: true,
+            authReady: true,
+            authMethod: 'ChatGPT',
+            subscriptionType: null,
+            statusLabel: 'Ready via ChatGPT',
+          },
+        },
+      ],
+    })
+
+    expect(options).toContainEqual(
+      expect.objectContaining({
+        label: 'GPT-5.4',
+        model: 'gpt-5.4',
+        provider: 'openai',
+        providerLabel: 'OpenAI via Codex',
+        transport: 'local-cli',
+        source: 'desktop-local-cli',
+      }),
+    )
+    expect(options).toContainEqual(
+      expect.objectContaining({
+        label: 'GPT-5.4 Mini',
+        model: 'gpt-5.4-mini',
+        provider: 'openai',
+        providerLabel: 'OpenAI via Codex',
+        transport: 'local-cli',
+        source: 'desktop-local-cli',
+      }),
+    )
+    expect(options).toContainEqual(
+      expect.objectContaining({
+        label: 'GPT-4.1 Mini',
+        model: 'gpt-4.1-mini',
+        provider: 'openai',
+        transport: 'api',
+      }),
+    )
   })
 })

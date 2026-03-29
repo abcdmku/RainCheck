@@ -33,16 +33,23 @@ describe('chooseRoute', () => {
     const route = chooseRoute({
       env: {
         ...baseEnv,
-        ANTHROPIC_API_KEY: 'shared-anthropic',
         DEFAULT_RESEARCH_PROVIDER: 'anthropic',
         DEFAULT_RESEARCH_MODEL: 'claude-sonnet-4-5',
       },
       taskClass: 'research',
-      keyMap: {},
+      providerStates: {
+        anthropic: {
+          available: true,
+          defaultModel: 'claude-sonnet-4-5',
+          transport: 'api',
+          source: 'shared-env',
+        },
+      },
     })
 
     expect(route.provider).toBe('anthropic')
     expect(route.model).toBe('claude-sonnet-4-5')
+    expect(route.transport).toBe('api')
   })
 
   it('falls back cleanly when only one provider exists', () => {
@@ -55,28 +62,39 @@ describe('chooseRoute', () => {
         DEFAULT_CHAT_PROVIDER: 'openai',
       },
       taskClass: 'chat',
-      keyMap: {},
+      providerStates: {
+        gemini: {
+          available: true,
+          defaultModel: 'gemini-2.5-flash',
+          transport: 'api',
+          source: 'shared-env',
+        },
+      },
     })
 
     expect(route.provider).toBe('gemini')
   })
 
-  it('prefers a stored user key when that provider is selected', () => {
+  it('uses saved API-key metadata when that provider is selected', () => {
     const route = chooseRoute({
       env: {
         ...baseEnv,
         OPENAI_API_KEY: undefined,
       },
       taskClass: 'chat',
-      keyMap: {
+      providerStates: {
         openai: {
-          apiKey: 'user-openai',
-          useByok: true,
+          available: true,
+          defaultModel: 'gpt-4.1-mini',
+          transport: 'api',
+          source: 'local-api-key',
         },
       },
     })
 
     expect(route.provider).toBe('openai')
-    expect(route.usedByok).toBe(true)
+    expect(route.transport).toBe('api')
+    expect(route.source).toBe('local-api-key')
+    expect(route.model).toBe('gpt-4.1-mini')
   })
 })

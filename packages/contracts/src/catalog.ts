@@ -160,7 +160,8 @@ const weatherSourceCatalogInput = [
     updateCadence: 'scheduled outlook updates',
     validTimeSemantics: 'headline page issue timing',
     supportedFormats: ['html', 'text'],
-    unitsOrProjectionNotes: 'headline and text context only until structured parsing is wired',
+    unitsOrProjectionNotes:
+      'headline and text context only until structured parsing is wired',
     latencyOrCostNotes: 'free public page fetch',
     recommendedUseCases: ['fire-weather setup', 'wildfire spread-risk context'],
   },
@@ -219,7 +220,8 @@ const weatherSourceCatalogInput = [
     updateCadence: 'scheduled forecast cycles',
     validTimeSemantics: 'issue and forecast valid periods',
     supportedFormats: ['html', 'text', 'image'],
-    unitsOrProjectionNotes: 'hazards, heights, surface systems, and key messages',
+    unitsOrProjectionNotes:
+      'hazards, heights, surface systems, and key messages',
     latencyOrCostNotes: 'free public data',
     recommendedUseCases: [
       'synoptic setup',

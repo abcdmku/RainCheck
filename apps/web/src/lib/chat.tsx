@@ -1,20 +1,39 @@
 import {
+  type AnswerTone,
   copyTextToolDef,
+  type MessageRecord,
   openArtifactToolDef,
+  type ProviderId,
+  type ProviderSource,
+  type ProviderTransport,
+  type RuntimeInfo,
   requestGeolocationPermissionToolDef,
+  runtimeInfoSchema,
   saveUiPreferenceToolDef,
+  type TimeDisplay,
+  type UnitSystem,
 } from '@raincheck/contracts'
 import type { ModelMessage, UIMessage } from '@tanstack/ai'
 import {
   ChatClient,
-  clientTools,
-  fetchServerSentEvents,
   type ChatClientState,
   type ConnectionStatus,
+  clientTools,
+  fetchServerSentEvents,
 } from '@tanstack/ai-client'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { resolveApiUrl } from './api'
+import { resolveClientApiUrl } from './api'
+import { getDesktopApiBaseUrl, getDesktopBridge } from './desktop'
 import type { ChatLocationOverride } from './location'
+import { mapRecordsToUiMessages } from './messages'
+
+function browserTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone
+  } catch {
+    return undefined
+  }
+}
 
 const geolocationTool = requestGeolocationPermissionToolDef.client(async () => {
   const position = await new Promise<GeolocationPosition>((resolve, reject) => {
@@ -26,6 +45,7 @@ const geolocationTool = requestGeolocationPermissionToolDef.client(async () => {
     label: 'Current device location',
     latitude: position.coords.latitude,
     longitude: position.coords.longitude,
+    timezone: browserTimeZone(),
   }
 })
 
@@ -57,12 +77,36 @@ type SendMessageOptions = {
   clientRequestId?: string
 }
 
+function extractUiMessageText(message: ModelMessage | UIMessage) {
+  if ('content' in message && typeof message.content === 'string') {
+    return message.content
+  }
+
+  const messageParts = (message as { parts?: Array<any> }).parts
+  if (!Array.isArray(messageParts)) {
+    return ''
+  }
+
+  return messageParts
+    .map((part: any) =>
+      part?.type === 'text' && typeof part.content === 'string'
+        ? part.content
+        : '',
+    )
+    .join('')
+}
+
 export function useRainCheckChat(options: {
   conversationId: string
   initialMessages: Array<UIMessage>
-  provider?: string
+  provider?: ProviderId
   model?: string
+  transport?: ProviderTransport
+  source?: ProviderSource
   locationOverride?: ChatLocationOverride
+  answerTone?: AnswerTone
+  units?: UnitSystem
+  timeDisplay?: TimeDisplay
   onCustomEvent?: (
     eventType: string,
     data: unknown,
@@ -84,9 +128,13 @@ export function useRainCheckChat(options: {
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>('disconnected')
   const [sessionGenerating, setSessionGenerating] = useState(false)
+  const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null)
   const messagesRef = useRef(options.initialMessages)
   const isFirstMountRef = useRef(true)
   const optionsRef = useRef(options)
+  const localCliRunRef = useRef<{ cancelled: boolean } | null>(null)
+  const apiTarget = useMemo(() => resolveClientApiUrl('/api/chat'), [])
+  const localCliMode = options.transport === 'local-cli'
 
   optionsRef.current = options
 
@@ -105,7 +153,25 @@ export function useRainCheckChat(options: {
     messagesRef.current = messages
   }, [messages])
 
+  const handleCustomEvent = useCallback(
+    (eventType: string, data: unknown, context: { toolCallId?: string }) => {
+      if (eventType === 'runtime-info') {
+        const parsed = runtimeInfoSchema.safeParse(data)
+        if (parsed.success) {
+          setRuntimeInfo(parsed.data)
+        }
+      }
+
+      optionsRef.current.onCustomEvent?.(eventType, data, context)
+    },
+    [],
+  )
+
   const client = useMemo(() => {
+    if (localCliMode) {
+      return null
+    }
+
     const messagesToUse = isFirstMountRef.current
       ? options.initialMessages
       : messagesRef.current
@@ -113,17 +179,18 @@ export function useRainCheckChat(options: {
     isFirstMountRef.current = false
 
     return new ChatClient({
-      connection: fetchServerSentEvents(resolveApiUrl('/api/chat')),
+      connection: fetchServerSentEvents(apiTarget),
       id: clientId,
       initialMessages: messagesToUse as any,
       body: {
         conversationId: optionsRef.current.conversationId,
         provider: optionsRef.current.provider,
         model: optionsRef.current.model,
+        displayTimezone: browserTimeZone(),
         locationOverride: optionsRef.current.locationOverride,
       },
       tools,
-      onCustomEvent: optionsRef.current.onCustomEvent,
+      onCustomEvent: handleCustomEvent,
       onError: (nextError: Error) => {
         optionsRef.current.onError?.(nextError)
       },
@@ -140,17 +207,29 @@ export function useRainCheckChat(options: {
       onConnectionStatusChange: setConnectionStatus,
       onSessionGeneratingChange: setSessionGenerating,
     })
-  }, [clientId, tools, options.initialMessages])
+  }, [
+    apiTarget,
+    clientId,
+    handleCustomEvent,
+    localCliMode,
+    tools,
+    options.initialMessages,
+  ])
 
   useEffect(() => {
+    if (!client) {
+      return
+    }
+
     client.updateOptions({
       body: {
         conversationId: options.conversationId,
         provider: options.provider,
         model: options.model,
+        displayTimezone: browserTimeZone(),
         locationOverride: options.locationOverride,
       },
-      onCustomEvent: options.onCustomEvent,
+      onCustomEvent: handleCustomEvent,
       onError: (nextError: Error) => {
         options.onError?.(nextError)
       },
@@ -164,24 +243,143 @@ export function useRainCheckChat(options: {
     options.conversationId,
     options.locationOverride,
     options.model,
-    options.onCustomEvent,
     options.onError,
     options.onFinish,
     options.provider,
+    handleCustomEvent,
     tools,
   ])
 
   useEffect(() => {
+    if (!client) {
+      return
+    }
+
     if (options.initialMessages.length > 0 && messages.length === 0) {
       client.setMessagesManually(options.initialMessages as any)
     }
-  }, [])
+  }, [client, messages.length, options.initialMessages])
 
   useEffect(() => {
     return () => {
-      client.stop()
+      if (client) {
+        client.stop()
+      }
+      if (localCliRunRef.current) {
+        localCliRunRef.current.cancelled = true
+      }
     }
   }, [client])
+
+  const runLocalCliMessage = useCallback(
+    async (content: string, extraBody?: SendMessageOptions) => {
+      const desktopBridge = getDesktopBridge()
+      if (!desktopBridge) {
+        throw new Error('Desktop local CLI is unavailable in this shell.')
+      }
+
+      const requestId =
+        extraBody?.clientRequestId?.trim() ||
+        `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const userMessage: UIMessage = {
+        id: requestId,
+        role: 'user',
+        parts: [
+          {
+            type: 'text',
+            content,
+          },
+        ],
+        createdAt: new Date(),
+      } as unknown as UIMessage
+
+      setError(undefined)
+      setIsLoading(true)
+      setConnectionStatus('connected')
+      setSessionGenerating(false)
+      setMessages((current) => [...current, userMessage])
+      localCliRunRef.current = {
+        cancelled: false,
+      }
+
+      const unsubscribe = desktopBridge.onLocalCliProgress((event) => {
+        if (localCliRunRef.current?.cancelled) {
+          return
+        }
+
+        optionsRef.current.onCustomEvent?.(
+          'tool-progress',
+          { label: event.label },
+          {},
+        )
+      })
+
+      try {
+        const result = await desktopBridge.runLocalCliChat({
+          apiBaseUrl: getDesktopApiBaseUrl(),
+          conversationId: optionsRef.current.conversationId,
+          message: content,
+          clientMessageId: requestId,
+          providerId:
+            optionsRef.current.provider === 'anthropic'
+              ? 'anthropic'
+              : 'openai',
+          model: optionsRef.current.model ?? '',
+          route: {
+            transport: 'local-cli',
+            source: 'desktop-local-cli',
+          },
+          context: {
+            location: extraBody?.locationOverride
+              ? {
+                  label: extraBody.locationOverride.label,
+                  latitude: extraBody.locationOverride.latitude,
+                  longitude: extraBody.locationOverride.longitude,
+                  timezone: extraBody.locationOverride.timezone,
+                }
+              : null,
+            units: optionsRef.current.units ?? 'imperial',
+            timeDisplay: optionsRef.current.timeDisplay ?? 'user-local',
+            answerTone: optionsRef.current.answerTone ?? 'casual',
+            displayTimezone: browserTimeZone(),
+          },
+        })
+
+        if (localCliRunRef.current?.cancelled) {
+          return
+        }
+
+        const [assistantMessage] = mapRecordsToUiMessages([
+          result.message as MessageRecord,
+        ])
+        if (assistantMessage) {
+          setMessages((current) => [...current, assistantMessage])
+        }
+        optionsRef.current.onFinish?.()
+      } catch (nextError) {
+        if (localCliRunRef.current?.cancelled) {
+          return
+        }
+
+        const typedError =
+          nextError instanceof Error
+            ? nextError
+            : new Error('Local CLI request failed.')
+        setError(typedError)
+        optionsRef.current.onError?.(typedError)
+        throw typedError
+      } finally {
+        unsubscribe()
+        if (localCliRunRef.current) {
+          localCliRunRef.current.cancelled = false
+        }
+        setIsLoading(false)
+        setStatus('ready')
+        setSessionGenerating(false)
+      }
+    },
+    [],
+  )
 
   const sendMessage = useCallback(
     async (content: string, extraBody?: SendMessageOptions) => {
@@ -201,7 +399,12 @@ export function useRainCheckChat(options: {
       }
 
       try {
-        await client.sendMessage(
+        if (localCliMode) {
+          await runLocalCliMessage(trimmed, extraBody)
+          return
+        }
+
+        await client?.sendMessage(
           requestId
             ? {
                 content: trimmed,
@@ -217,31 +420,66 @@ export function useRainCheckChat(options: {
         throw sendError
       }
     },
-    [client],
+    [client, localCliMode, runLocalCliMessage],
   )
 
   const append = useCallback(
     async (message: ModelMessage | UIMessage) => {
-      await client.append(message as any)
+      if (client) {
+        await client.append(message as any)
+        return
+      }
+
+      setMessages((current) => [...current, message as UIMessage])
     },
     [client],
   )
 
   const reload = useCallback(async () => {
-    await client.reload()
-  }, [client])
+    if (client) {
+      await client.reload()
+      return
+    }
+
+    const lastUserMessage = [...messagesRef.current]
+      .reverse()
+      .find((message) => message.role === 'user')
+    const text = lastUserMessage ? extractUiMessageText(lastUserMessage) : ''
+    if (text.trim()) {
+      await sendMessage(text)
+    }
+  }, [client, sendMessage])
 
   const stop = useCallback(() => {
-    client.stop()
+    if (client) {
+      client.stop()
+      return
+    }
+
+    if (localCliRunRef.current) {
+      localCliRunRef.current.cancelled = true
+    }
+    setIsLoading(false)
+    setStatus('ready')
   }, [client])
 
   const clear = useCallback(() => {
-    client.clear()
+    if (client) {
+      client.clear()
+      return
+    }
+
+    setMessages([])
   }, [client])
 
   const setMessagesManually = useCallback(
     (nextMessages: Array<UIMessage>) => {
-      client.setMessagesManually(nextMessages as any)
+      if (client) {
+        client.setMessagesManually(nextMessages as any)
+        return
+      }
+
+      setMessages(nextMessages)
     },
     [client],
   )
@@ -254,20 +492,26 @@ export function useRainCheckChat(options: {
       state?: 'output-available' | 'output-error'
       errorText?: string
     }) => {
-      await client.addToolResult(result)
+      if (client) {
+        await client.addToolResult(result)
+      }
     },
     [client],
   )
 
   const addToolApprovalResponse = useCallback(
     async (response: { id: string; approved: boolean }) => {
-      await client.addToolApprovalResponse(response)
+      if (client) {
+        await client.addToolApprovalResponse(response)
+      }
     },
     [client],
   )
 
   return {
     messages,
+    runtimeInfo,
+    apiTarget,
     sendMessage,
     append,
     reload,

@@ -19,6 +19,8 @@ export default function App() {
   const [failed, setFailed] = useState(false)
   const appUrl = useMemo(() => {
     const extra = Constants.expoConfig?.extra as { appUrl?: string } | undefined
+    // The mobile shell embeds the web app, so it inherits whatever backend
+    // target that web app already points at via RAINCHECK_APP_URL/appUrl.
     return extra?.appUrl ?? fallbackUrl
   }, [])
 

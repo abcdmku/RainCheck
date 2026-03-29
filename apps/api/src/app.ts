@@ -10,7 +10,10 @@ import { toAppError } from './lib/errors'
 import { registerArtifactRoutes } from './routes/artifacts'
 import { registerChatRoutes } from './routes/chat'
 import { registerConversationRoutes } from './routes/conversations'
+import { registerDesktopLocalCliRoutes } from './routes/desktop-local-cli'
+import { registerRuntimeRoutes } from './routes/runtime'
 import { registerSettingsRoutes } from './routes/settings'
+import { createRuntimeInfo, type RainCheckRuntimeInfo } from './runtime/info'
 import { checkWeatherService } from './weather/service-client'
 
 type ChatHandler = (
@@ -20,10 +23,12 @@ type ChatHandler = (
     messages: Array<any>
     provider?: 'openai' | 'anthropic' | 'gemini' | 'openrouter'
     model?: string
+    displayTimezone?: string
     locationOverride?: {
       label?: string
       latitude?: number
       longitude?: number
+      timezone?: string
     }
   },
 ) => Promise<{
@@ -38,6 +43,7 @@ declare module 'fastify' {
     raincheckChatHandler: ChatHandler
     raincheckDb: RainCheckDb
     raincheckEnv: RainCheckEnv
+    raincheckRuntime: RainCheckRuntimeInfo
     raincheckWeatherServiceCheck: WeatherServiceCheck
   }
 }
@@ -51,6 +57,7 @@ export function buildApp(
 ) {
   const env = options.env ?? parseEnv(process.env)
   const { db, sqlite } = createDb(env.DB_URL)
+  const runtimeInfo = createRuntimeInfo(env)
   const app = fastify({
     logger:
       env.NODE_ENV === 'development'
@@ -64,6 +71,7 @@ export function buildApp(
 
   app.decorate('raincheckEnv', env)
   app.decorate('raincheckDb', db)
+  app.decorate('raincheckRuntime', runtimeInfo)
   app.decorate('raincheckChatHandler', options.chatHandler ?? handleChatRequest)
   app.decorate(
     'raincheckWeatherServiceCheck',
@@ -107,7 +115,9 @@ export function buildApp(
 
   void registerConversationRoutes(app)
   void registerSettingsRoutes(app)
+  void registerDesktopLocalCliRoutes(app)
   void registerChatRoutes(app)
+  void registerRuntimeRoutes(app)
   void registerArtifactRoutes(app)
 
   return app

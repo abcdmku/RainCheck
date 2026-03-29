@@ -326,6 +326,25 @@ button {
 
 /* ── Messages ─────────────────────────────── */
 
+.thread-runtime-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px clamp(24px, 5vw, 64px) 0;
+}
+
+.thread-runtime-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-soft);
+  font-size: 0.74rem;
+  letter-spacing: 0.01em;
+}
+
 .thread-messages {
   flex: 1;
   overflow-y: auto;
@@ -1521,12 +1540,48 @@ textarea:focus-visible {
   margin-bottom: 8px;
 }
 
+.provider-connection-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--bg-strong) 72%, transparent);
+}
+
+.provider-connection-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.provider-connection-header div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.provider-connection-header strong {
+  font-size: 0.9rem;
+}
+
+.provider-connection-header span {
+  color: var(--text-soft);
+  font-size: 0.76rem;
+}
+
 .byok-row {
   display: grid;
   grid-template-columns: 120px 1fr auto auto;
   align-items: center;
   gap: 8px;
   padding: 8px 0;
+}
+
+.provider-connection-row {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding-top: 12px;
 }
 
 .byok-row div {
@@ -1557,6 +1612,13 @@ textarea:focus-visible {
 
 .byok-row input:hover {
   border-color: var(--line-strong);
+}
+
+.provider-connection-note {
+  grid-column: 2 / -1;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.78rem;
 }
 
 .settings-actions {

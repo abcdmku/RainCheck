@@ -1,10 +1,17 @@
-import type { Conversation, ProviderId } from '@raincheck/contracts'
+import type {
+  Conversation,
+  ProviderId,
+  ProviderSource,
+  ProviderTransport,
+  UpdateSettingsInput,
+} from '@raincheck/contracts'
 import type { UIMessage } from '@tanstack/ai'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { apiClient, resolveApiUrl, type SettingsPayload } from '../lib/api'
+import { apiClient, resolveApiUrl } from '../lib/api'
 import { useRainCheckChat } from '../lib/chat'
+import { getDesktopBridge, isDesktopShell } from '../lib/desktop'
 import {
   type ChatLocationOverride,
   loadStoredLocationPreference,
@@ -21,6 +28,7 @@ import { ArtifactViewer } from './artifact-viewer'
 import { Composer, type ReasoningLevel } from './composer'
 import { ConversationSidebar } from './conversation-sidebar'
 import { MessageView } from './message-view'
+import { RuntimeDiagnostics } from './runtime-diagnostics'
 import { SettingsPanel } from './settings-panel'
 
 type ChatShellProps = {
@@ -38,6 +46,8 @@ function clientRequestId() {
 type RouteSelection = {
   provider: ProviderId
   model: string
+  transport: ProviderTransport
+  source: ProviderSource
 }
 
 type PendingDraft = RouteSelection & {
@@ -56,6 +66,8 @@ type LiveStatus = {
 const defaultRouteSelection: RouteSelection = {
   provider: 'openai',
   model: 'gpt-4.1-mini',
+  transport: 'api',
+  source: 'shared-env',
 }
 
 const progressLabelMap: Record<string, string> = {
@@ -126,6 +138,13 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     queryKey: ['settings'],
     queryFn: () => apiClient.getSettings(),
   })
+  const desktopConnectionsQuery = useQuery({
+    enabled: isDesktopShell(),
+    queryKey: ['desktop', 'provider-connections'],
+    queryFn: async () =>
+      (await getDesktopBridge()?.getLocalProviderConnections())?.providers ??
+      [],
+  })
 
   const conversationQuery = useQuery({
     enabled: Boolean(conversationId),
@@ -134,8 +153,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
   })
 
   const settingsMutation = useMutation({
-    mutationFn: (next: SettingsPayload) =>
-      apiClient.updateSettings(next as any),
+    mutationFn: (next: UpdateSettingsInput) => apiClient.updateSettings(next),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['settings'] })
     },
@@ -164,8 +182,17 @@ export function ChatShell({ conversationId }: ChatShellProps) {
   )
 
   const availableModelOptions = useMemo(
-    () => getAvailableModelOptions(settingsQuery.data?.availableProviders),
-    [settingsQuery.data?.availableProviders],
+    () =>
+      getAvailableModelOptions({
+        availableProviders: settingsQuery.data?.availableProviders,
+        providerConnections: settingsQuery.data?.providerConnections,
+        desktopProviderConnections: desktopConnectionsQuery.data,
+      }),
+    [
+      desktopConnectionsQuery.data,
+      settingsQuery.data?.availableProviders,
+      settingsQuery.data?.providerConnections,
+    ],
   )
 
   const selectedModelOption = useMemo(
@@ -239,7 +266,12 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     initialMessages,
     provider: selectedRoute.provider,
     model: selectedRoute.model,
+    transport: selectedRoute.transport,
+    source: selectedRoute.source,
     locationOverride: effectiveLocationOverride ?? undefined,
+    answerTone: settingsQuery.data?.answerTone ?? 'casual',
+    units: settingsQuery.data?.units ?? 'imperial',
+    timeDisplay: settingsQuery.data?.timeDisplay ?? 'user-local',
     onCustomEvent: (eventType: string, data: unknown) => {
       if (eventType === 'tool-progress') {
         const label = formatProgressLabel(
@@ -336,6 +368,8 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     setSelectedRoute({
       provider: fallbackOption.provider,
       model: fallbackOption.model,
+      transport: fallbackOption.transport,
+      source: fallbackOption.source,
     })
   }, [availableModelOptions, selectedRoute])
 
@@ -398,6 +432,8 @@ export function ChatShell({ conversationId }: ChatShellProps) {
       setSelectedRoute({
         provider: matchingOption.provider,
         model: matchingOption.model,
+        transport: matchingOption.transport,
+        source: matchingOption.source,
       })
     }
 
@@ -428,16 +464,22 @@ export function ChatShell({ conversationId }: ChatShellProps) {
       text: parsed.text,
       provider: parsed.provider ?? selectedRoute.provider,
       model: parsed.model ?? selectedRoute.model,
+      transport: parsed.transport ?? selectedRoute.transport,
+      source: parsed.source ?? selectedRoute.source,
       locationOverride: parsed.locationOverride ?? null,
     }
 
     if (
       nextDraft.provider !== selectedRoute.provider ||
-      nextDraft.model !== selectedRoute.model
+      nextDraft.model !== selectedRoute.model ||
+      nextDraft.transport !== selectedRoute.transport ||
+      nextDraft.source !== selectedRoute.source
     ) {
       setSelectedRoute({
         provider: nextDraft.provider,
         model: nextDraft.model,
+        transport: nextDraft.transport,
+        source: nextDraft.source,
       })
     }
 
@@ -453,6 +495,8 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     pendingDraft,
     selectedRoute.model,
     selectedRoute.provider,
+    selectedRoute.source,
+    selectedRoute.transport,
   ])
 
   useEffect(() => {
@@ -466,30 +510,31 @@ export function ChatShell({ conversationId }: ChatShellProps) {
 
     if (
       pendingDraft.provider !== selectedRoute.provider ||
-      pendingDraft.model !== selectedRoute.model
+      pendingDraft.model !== selectedRoute.model ||
+      pendingDraft.transport !== selectedRoute.transport ||
+      pendingDraft.source !== selectedRoute.source
     ) {
       return
     }
 
     pendingDraftDispatchRef.current = pendingDraft.draftId
     setPendingDraft(null)
-    void chat.sendMessage(
-      pendingDraft.text,
-      {
-        clientRequestId: pendingDraft.clientRequestId,
-        ...(pendingDraft.locationOverride
-          ? {
-              locationOverride: pendingDraft.locationOverride,
-            }
-          : {}),
-      },
-    )
+    void chat.sendMessage(pendingDraft.text, {
+      clientRequestId: pendingDraft.clientRequestId,
+      ...(pendingDraft.locationOverride
+        ? {
+            locationOverride: pendingDraft.locationOverride,
+          }
+        : {}),
+    })
   }, [
     chat,
     conversationId,
     pendingDraft,
     selectedRoute.model,
     selectedRoute.provider,
+    selectedRoute.source,
+    selectedRoute.transport,
   ])
 
   const messages = conversationId ? chat.messages : []
@@ -501,7 +546,7 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     messageEndRef.current?.scrollIntoView({
       behavior: chat.isLoading ? 'auto' : 'smooth',
     })
-  }, [chat.isLoading, messages])
+  }, [chat.isLoading])
 
   async function resolveMessageLocationOverride() {
     if (effectiveLocationOverride) {
@@ -541,6 +586,8 @@ export function ChatShell({ conversationId }: ChatShellProps) {
           text,
           provider: selectedRoute.provider,
           model: selectedRoute.model,
+          transport: selectedRoute.transport,
+          source: selectedRoute.source,
           locationOverride,
         }),
       )
@@ -597,17 +644,14 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     const messageLocationOverride = await resolveMessageLocationOverride()
     const requestId = clientRequestId()
 
-    await chat.sendMessage(
-      trimmed,
-      {
-        clientRequestId: requestId,
-        ...(messageLocationOverride
-          ? {
-              locationOverride: messageLocationOverride,
-            }
-          : {}),
-      },
-    )
+    await chat.sendMessage(trimmed, {
+      clientRequestId: requestId,
+      ...(messageLocationOverride
+        ? {
+            locationOverride: messageLocationOverride,
+          }
+        : {}),
+    })
   }
 
   async function handleEditAndResend(messageId: string, newText: string) {
@@ -625,23 +669,39 @@ export function ChatShell({ conversationId }: ChatShellProps) {
     await chat.sendMessage(newText)
   }
 
-  async function storeByok(providerId: string, apiKey: string) {
+  async function updateProviderConnection(
+    providerId: string,
+    body: Record<string, unknown>,
+  ) {
+    await fetch(
+      resolveApiUrl(`/api/settings/providers/${providerId}/connection`),
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    )
+    await queryClient.invalidateQueries({ queryKey: ['settings'] })
+  }
+
+  async function saveProviderApiKey(providerId: string, apiKey: string) {
     if (!apiKey.trim()) {
       return
     }
 
-    await fetch(resolveApiUrl('/api/settings/byok'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ providerId, apiKey }),
+    await updateProviderConnection(providerId, {
+      mode: 'api-key',
+      apiKey,
     })
-    await queryClient.invalidateQueries({ queryKey: ['settings'] })
   }
 
-  async function clearByok(providerId: string) {
-    await fetch(resolveApiUrl(`/api/settings/byok/${providerId}`), {
-      method: 'DELETE',
-    })
+  async function clearProviderConnection(providerId: string) {
+    await fetch(
+      resolveApiUrl(`/api/settings/providers/${providerId}/connection`),
+      {
+        method: 'DELETE',
+      },
+    )
     await queryClient.invalidateQueries({ queryKey: ['settings'] })
   }
 
@@ -677,6 +737,11 @@ export function ChatShell({ conversationId }: ChatShellProps) {
         />
 
         <main className="thread-shell">
+          <RuntimeDiagnostics
+            apiTarget={chat.apiTarget}
+            runtimeInfo={chat.runtimeInfo}
+            visible={import.meta.env.DEV}
+          />
           <section className="thread-messages">
             {messages.length === 0 ? (
               <div className="empty-thread">
@@ -717,22 +782,18 @@ export function ChatShell({ conversationId }: ChatShellProps) {
               <div className="message-row">
                 <div className="message-wrap">
                   <div className="message-bubble">
-                    <div
-                      aria-live="polite"
-                      className="assistant-status"
-                      role="status"
-                    >
-                      <div className="thinking-indicator">
+                    <output aria-live="polite" className="assistant-status">
+                      <span className="thinking-indicator">
                         <span className="thinking-dot" />
                         <span className="thinking-dot" />
                         <span className="thinking-dot" />
-                      </div>
+                      </span>
                       {liveStatus ? (
                         <span className="assistant-status-label">
                           {liveStatus.label}
                         </span>
                       ) : null}
-                    </div>
+                    </output>
                   </div>
                 </div>
               </div>
@@ -741,15 +802,14 @@ export function ChatShell({ conversationId }: ChatShellProps) {
               <div className="message-row">
                 <div className="message-wrap">
                   <div className="message-bubble">
-                    <div
+                    <output
                       aria-live="polite"
                       className="assistant-status is-error"
-                      role="status"
                     >
                       <span className="assistant-status-label">
                         Request failed. Try again.
                       </span>
-                    </div>
+                    </output>
                   </div>
                 </div>
               </div>
@@ -768,6 +828,8 @@ export function ChatShell({ conversationId }: ChatShellProps) {
               setSelectedRoute({
                 provider: option.provider,
                 model: option.model,
+                transport: option.transport,
+                source: option.source,
               })
             }
             onReasoningLevelChange={setReasoningLevel}
@@ -785,19 +847,25 @@ export function ChatShell({ conversationId }: ChatShellProps) {
       />
       <SettingsPanel
         isOpen={settingsOpen}
-        onClearByok={clearByok}
+        isDesktop={isDesktopShell()}
+        desktopProviderConnections={desktopConnectionsQuery.data ?? []}
+        onClearProviderConnection={clearProviderConnection}
         onClose={() => setSettingsOpen(false)}
         onSave={async (next) => {
           const { availableProviders: _availableProviders, ...settingsInput } =
             next
-          await settingsMutation.mutateAsync(settingsInput)
+          const {
+            providerConnections: _providerConnections,
+            ...userSettingsInput
+          } = settingsInput
+          await settingsMutation.mutateAsync(userSettingsInput)
           if (next.theme) {
             window.localStorage.setItem('raincheck-theme', next.theme)
             applyTheme(next.theme)
           }
           setSettingsOpen(false)
         }}
-        onStoreByok={storeByok}
+        onSaveProviderApiKey={saveProviderApiKey}
         settings={settingsQuery.data ?? null}
       />
     </>

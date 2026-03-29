@@ -28,6 +28,7 @@ const normalizedLocationInputSchema: JSONSchema = {
     longitude: { type: 'number', minimum: -180, maximum: 180 },
     region: { type: 'string' },
     country: { type: 'string' },
+    timezone: { type: 'string' },
     resolvedBy: { type: 'string' },
   },
   required: ['query', 'name', 'latitude', 'longitude', 'resolvedBy'],
@@ -292,6 +293,43 @@ const synthesizeWeatherInputSchema: JSONSchema = {
       type: 'string',
       enum: ['analysis-only', 'general-target', 'exact-target', 'full-route'],
     },
+    originLocation: normalizedLocationInputSchema,
+    displayTimezone: { type: 'string' },
+    answerTone: {
+      type: 'string',
+      enum: ['casual', 'professional'],
+    },
+    timeDisplay: {
+      type: 'string',
+      enum: ['user-local', 'dual', 'target-local'],
+    },
+    selectedTarget: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        label: { type: 'string' },
+        location: normalizedLocationInputSchema,
+        regionLabel: { type: 'string' },
+        startLabel: { type: 'string' },
+        stopLabel: { type: 'string' },
+        travelHours: { type: 'number', minimum: 0, maximum: 24 },
+        corridorHours: { type: 'number', minimum: 0, maximum: 12 },
+        withinNearbyRadius: { type: 'boolean' },
+        supportScore: { type: 'number', minimum: 0, maximum: 1 },
+      },
+      required: ['query', 'label', 'location'],
+    },
+    nightfall: {
+      type: 'object',
+      properties: {
+        event: {
+          type: 'string',
+          enum: ['civil-dusk', 'sunset'],
+        },
+        occursAt: { type: 'string' },
+      },
+      required: ['event', 'occursAt'],
+    },
     evidenceProducts: {
       type: 'array',
       items: evidenceProductInputSchema,
@@ -302,6 +340,97 @@ const synthesizeWeatherInputSchema: JSONSchema = {
     },
   },
   required: ['userQuestion', 'workflow', 'region', 'timeWindow'],
+}
+
+const comparisonCandidateInputSchema: JSONSchema = {
+  type: 'object',
+  description:
+    'One named or previously resolved comparison candidate. Leave candidates empty when the backend should reuse comparison context from the thread.',
+  properties: {
+    query: { type: 'string' },
+    label: { type: 'string' },
+    location: normalizedLocationInputSchema,
+    source: {
+      type: 'string',
+      enum: [
+        'user',
+        'follow-up-context',
+        'beach-discovery',
+        'severe-discovery',
+      ],
+    },
+    reason: { type: 'string' },
+  },
+}
+
+const comparisonDiscoveryScopeInputSchema: JSONSchema = {
+  type: 'object',
+  description:
+    'Optional discovery scope for region-based ranking. Use this for beach or broad severe-weather rankings.',
+  properties: {
+    category: {
+      type: 'string',
+      enum: ['beach', 'severe-weather'],
+    },
+    locationQuery: { type: 'string' },
+    location: normalizedLocationInputSchema,
+    radiusKm: {
+      type: 'number',
+      minimum: 1,
+      maximum: 500,
+    },
+  },
+  required: ['category'],
+}
+
+const compareWeatherInputSchema: JSONSchema = {
+  type: 'object',
+  description:
+    'Compare or rank multiple weather candidates and return one prose-ready conclusion bundle.',
+  properties: {
+    userQuestion: { type: 'string' },
+    workflow: { type: 'string' },
+    answerMode: {
+      type: 'string',
+      enum: ['single', 'compare', 'rank'],
+    },
+    candidateMode: {
+      type: 'string',
+      enum: ['named', 'discovered', 'mixed'],
+    },
+    rankLimit: {
+      type: 'number',
+      minimum: 1,
+      maximum: 12,
+    },
+    rankingObjective: {
+      type: 'string',
+      enum: ['severe-favorability', 'beach-day', 'pleasant-weather'],
+    },
+    originLocation: normalizedLocationInputSchema,
+    displayTimezone: { type: 'string' },
+    answerTone: {
+      type: 'string',
+      enum: ['casual', 'professional'],
+    },
+    timeDisplay: {
+      type: 'string',
+      enum: ['user-local', 'dual', 'target-local'],
+    },
+    discoveryScope: comparisonDiscoveryScopeInputSchema,
+    candidates: {
+      type: 'array',
+      items: comparisonCandidateInputSchema,
+    },
+  },
+  required: [
+    'userQuestion',
+    'workflow',
+    'answerMode',
+    'candidateMode',
+    'rankLimit',
+    'rankingObjective',
+  ],
 }
 
 const geminiInputSchemaByToolName: Record<string, JSONSchema> = {
@@ -346,6 +475,7 @@ const geminiInputSchemaByToolName: Record<string, JSONSchema> = {
     'winter-hydrology',
   ]),
   synthesize_weather_conclusion: synthesizeWeatherInputSchema,
+  compare_weather_candidates: compareWeatherInputSchema,
 }
 
 export function sanitizeToolsForGemini(

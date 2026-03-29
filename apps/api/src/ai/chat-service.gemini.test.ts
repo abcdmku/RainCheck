@@ -1,3 +1,4 @@
+import type { RequestClassification } from '@raincheck/contracts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const { chatMock, maxIterationsMock } = vi.hoisted(() => ({
@@ -22,6 +23,38 @@ async function* streamChunks(chunks: Array<any>) {
   for (const chunk of chunks) {
     yield chunk
   }
+}
+
+const severeClassification: RequestClassification = {
+  taskClass: 'research',
+  intent: 'severe-weather',
+  timeHorizonHours: 6,
+  locationRequired: true,
+  needsArtifact: false,
+  chaseGuidanceLevel: 'general-target',
+  answerMode: 'single',
+  candidateMode: 'named',
+  rankLimit: 1,
+  rankingObjective: undefined,
+}
+
+const analysisOnlySevereClassification: RequestClassification = {
+  ...severeClassification,
+  chaseGuidanceLevel: 'analysis-only',
+  locationRequired: false,
+}
+
+const forecastClassification: RequestClassification = {
+  taskClass: 'research',
+  intent: 'forecast',
+  timeHorizonHours: 6,
+  locationRequired: true,
+  needsArtifact: false,
+  chaseGuidanceLevel: 'analysis-only',
+  answerMode: 'single',
+  candidateMode: 'named',
+  rankLimit: 1,
+  rankingObjective: undefined,
 }
 
 describe('streamGeminiWithToolContext', () => {
@@ -128,6 +161,8 @@ describe('streamGeminiWithToolContext', () => {
     const streamed: Array<any> = []
     for await (const chunk of streamGeminiWithToolContext({
       adapter: { model: 'gemini-3.1-pro-preview' },
+      answerTone: 'casual',
+      classification: forecastClassification,
       messages: [
         {
           role: 'user',
@@ -235,6 +270,8 @@ describe('streamGeminiWithToolContext', () => {
     const streamed: Array<any> = []
     for await (const chunk of streamGeminiWithToolContext({
       adapter: { model: 'gemini-3.1-pro-preview' },
+      answerTone: 'casual',
+      classification: analysisOnlySevereClassification,
       messages: [
         {
           role: 'user',
@@ -346,6 +383,8 @@ describe('streamGeminiWithToolContext', () => {
     const streamed: Array<any> = []
     for await (const chunk of streamGeminiWithToolContext({
       adapter: { model: 'gemini-3.1-pro-preview' },
+      answerTone: 'casual',
+      classification: analysisOnlySevereClassification,
       messages: [
         {
           role: 'user',
@@ -446,18 +485,84 @@ describe('streamGeminiWithToolContext', () => {
       ),
     ).toBe(true)
   })
+
+  it('uses the severe limitation text when only derivation results exist and recovery cannot synthesize an answer', async () => {
+    chatMock.mockReturnValueOnce(
+      streamChunks([
+        {
+          type: 'RUN_STARTED',
+          runId: 'run-3',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+        },
+        {
+          type: 'TOOL_CALL_END',
+          toolCallId: 'tool-derive-only',
+          toolName: 'derive_radar_nowcast',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          input: {
+            userQuestion: 'best storm to spot currently?',
+          },
+          result: JSON.stringify({
+            agreementSummary:
+              'Radar Nowcast evidence for Columbus, Ohio, United States is led by NEXRAD, MRMS; nexrad is the most repeated source family with direct upstream support.',
+            keyConflicts: [
+              'Storm mergers or radar sampling gaps could change the strongest object quickly.',
+            ],
+            evidenceProducts: [],
+          }),
+        },
+        {
+          type: 'RUN_FINISHED',
+          runId: 'run-3',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 2,
+          finishReason: 'tool_calls',
+        },
+      ]),
+    )
+
+    const streamed: Array<any> = []
+    for await (const chunk of streamGeminiWithToolContext({
+      adapter: { model: 'gemini-3.1-pro-preview' },
+      answerTone: 'casual',
+      classification: analysisOnlySevereClassification,
+      messages: [
+        {
+          role: 'user',
+          content: 'best storm to spot currently?',
+        },
+      ],
+      tools: [
+        {
+          name: 'derive_radar_nowcast',
+        },
+      ],
+      systemPrompt: 'You are RainCheck.',
+      conversationId: 'conv-3',
+      middleware: [],
+      recoverToolResults: async () => [],
+    })) {
+      streamed.push(chunk)
+    }
+
+    const outputText = streamed
+      .filter((chunk) => chunk.type === 'TEXT_MESSAGE_CONTENT')
+      .map((chunk) => String(chunk.content ?? chunk.delta ?? ''))
+      .join('')
+
+    expect(chatMock).toHaveBeenCalledTimes(1)
+    expect(outputText).toContain(
+      "I don't have enough live severe-weather data yet to make a confident setup call. Check back after the next radar or model update.",
+    )
+    expect(outputText).not.toContain(
+      'Why RainCheck thinks that: Radar Nowcast evidence for Columbus',
+    )
+  })
 })
 
 describe('streamValidatedSevereWeatherResponse', () => {
-  const severeClassification = {
-    taskClass: 'research',
-    intent: 'severe-weather',
-    timeHorizonHours: 6,
-    locationRequired: true,
-    needsArtifact: false,
-    chaseGuidanceLevel: 'general-target',
-  } as const
-
   it('suppresses refusal-like chase answers and replaces them with recovered weather guidance', async () => {
     const refusalText =
       'I cannot provide guidance for storm chasing or intercepting tornadoes because these activities carry extreme risks to life and property.'
@@ -500,6 +605,7 @@ describe('streamValidatedSevereWeatherResponse', () => {
           finishReason: 'stop',
         },
       ]),
+      answerTone: 'casual',
       classification: severeClassification,
       route: {
         provider: 'gemini',
@@ -553,6 +659,119 @@ describe('streamValidatedSevereWeatherResponse', () => {
     ).toBe(true)
   })
 
+  it('replaces derivation-only severe-weather answers when synthesis never ran', async () => {
+    const recoverToolResults = vi.fn(async () => [
+      {
+        toolCallId: 'recovery-synthesis',
+        toolName: 'synthesize_weather_conclusion',
+        result: {
+          bottomLine:
+            'The current storm-scale evidence near Columbus is still too conditional to support one best storm target yet.',
+          confidence: {
+            level: 'medium',
+            reason:
+              'Radar and mesoscale support show active storms, but mergers and boundary placement still limit storm-specific precision.',
+          },
+          mostLikelyScenario:
+            'A few stronger cells remain possible near the eastern Columbus corridor, but the dominant storm can still change quickly.',
+          keyConflicts: [
+            'Storm mergers or radar sampling gaps could change the strongest object quickly.',
+          ],
+        },
+      },
+    ])
+    const streamed: Array<any> = []
+
+    for await (const chunk of streamValidatedSevereWeatherResponse({
+      stream: streamChunks([
+        {
+          type: 'RUN_STARTED',
+          runId: 'run-derivation-only',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+        },
+        {
+          type: 'TEXT_MESSAGE_START',
+          messageId: 'msg-derivation-only',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          role: 'assistant',
+        },
+        {
+          type: 'TEXT_MESSAGE_CONTENT',
+          messageId: 'msg-derivation-only',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          delta:
+            'Why RainCheck thinks that: Radar Nowcast evidence for Columbus, Ohio, United States is led by NEXRAD, MRMS; nexrad is the most repeated source family with direct upstream support.',
+          content:
+            'Why RainCheck thinks that: Radar Nowcast evidence for Columbus, Ohio, United States is led by NEXRAD, MRMS; nexrad is the most repeated source family with direct upstream support.',
+        },
+        {
+          type: 'TEXT_MESSAGE_END',
+          messageId: 'msg-derivation-only',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+        },
+        {
+          type: 'TOOL_CALL_END',
+          toolCallId: 'tool-derive',
+          toolName: 'derive_radar_nowcast',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          input: {
+            userQuestion: 'best storm to spot currently?',
+          },
+          result: JSON.stringify({
+            agreementSummary:
+              'Radar Nowcast evidence for Columbus, Ohio, United States is led by NEXRAD, MRMS; nexrad is the most repeated source family with direct upstream support.',
+            keyConflicts: [
+              'Storm mergers or radar sampling gaps could change the strongest object quickly.',
+            ],
+            evidenceProducts: [],
+          }),
+        },
+        {
+          type: 'RUN_FINISHED',
+          runId: 'run-derivation-only',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 2,
+          finishReason: 'stop',
+        },
+      ]),
+      answerTone: 'casual',
+      classification: severeClassification,
+      route: {
+        provider: 'gemini',
+        model: 'gemini-3.1-pro-preview',
+      },
+      latestText: 'best storm to spot currently?',
+      recoverToolResults,
+    })) {
+      streamed.push(chunk)
+    }
+
+    const outputText = streamed
+      .filter((chunk) => chunk.type === 'TEXT_MESSAGE_CONTENT')
+      .map((chunk) => String(chunk.content ?? chunk.delta ?? ''))
+      .join('')
+
+    expect(recoverToolResults).toHaveBeenCalledTimes(1)
+    expect(outputText).toContain(
+      'The current storm-scale evidence near Columbus is still too conditional to support one best storm target yet.',
+    )
+    expect(outputText).not.toContain(
+      'Why RainCheck thinks that: Radar Nowcast evidence for Columbus',
+    )
+    expect(
+      streamed.some(
+        (chunk) =>
+          chunk.type === 'TOOL_CALL_END' &&
+          chunk.toolName === 'synthesize_weather_conclusion',
+      ),
+    ).toBe(true)
+  })
+
   it('passes through supported severe-weather answers without invoking recovery', async () => {
     const recoverToolResults = vi.fn(async () => [])
     const streamed: Array<any> = []
@@ -589,6 +808,22 @@ describe('streamValidatedSevereWeatherResponse', () => {
           timestamp: 1,
         },
         {
+          type: 'TOOL_CALL_END',
+          toolCallId: 'tool-pass-synthesis',
+          toolName: 'synthesize_weather_conclusion',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          result: JSON.stringify({
+            bottomLine:
+              'From Yorkville, the best-supported call is to stage west to southwest of town for the late-afternoon window and stay flexible on the exact corridor.',
+            confidence: {
+              level: 'medium',
+              reason:
+                'The corridor is supported by current severe context and the latest short-range evidence.',
+            },
+          }),
+        },
+        {
           type: 'RUN_FINISHED',
           runId: 'run-pass',
           model: 'gemini-3.1-pro-preview',
@@ -596,6 +831,7 @@ describe('streamValidatedSevereWeatherResponse', () => {
           finishReason: 'stop',
         },
       ]),
+      answerTone: 'casual',
       classification: severeClassification,
       route: {
         provider: 'gemini',
@@ -614,6 +850,88 @@ describe('streamValidatedSevereWeatherResponse', () => {
 
     expect(outputText).toContain('best-supported call is to stage west to southwest of town')
     expect(recoverToolResults).not.toHaveBeenCalled()
+  })
+
+  it('uses the short limitation message when recovery cannot synthesize beyond derivation-only severe output', async () => {
+    const streamed: Array<any> = []
+
+    for await (const chunk of streamValidatedSevereWeatherResponse({
+      stream: streamChunks([
+        {
+          type: 'RUN_STARTED',
+          runId: 'run-derive-no-recovery',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+        },
+        {
+          type: 'TEXT_MESSAGE_START',
+          messageId: 'msg-derive-no-recovery',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          role: 'assistant',
+        },
+        {
+          type: 'TEXT_MESSAGE_CONTENT',
+          messageId: 'msg-derive-no-recovery',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          delta:
+            'Why RainCheck thinks that: Radar Nowcast evidence for Columbus, Ohio, United States is led by NEXRAD, MRMS; nexrad is the most repeated source family with direct upstream support.',
+          content:
+            'Why RainCheck thinks that: Radar Nowcast evidence for Columbus, Ohio, United States is led by NEXRAD, MRMS; nexrad is the most repeated source family with direct upstream support.',
+        },
+        {
+          type: 'TEXT_MESSAGE_END',
+          messageId: 'msg-derive-no-recovery',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+        },
+        {
+          type: 'TOOL_CALL_END',
+          toolCallId: 'tool-derive-only',
+          toolName: 'derive_radar_nowcast',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 1,
+          result: JSON.stringify({
+            agreementSummary:
+              'Radar Nowcast evidence for Columbus, Ohio, United States is led by NEXRAD, MRMS; nexrad is the most repeated source family with direct upstream support.',
+            keyConflicts: [
+              'Storm mergers or radar sampling gaps could change the strongest object quickly.',
+            ],
+            evidenceProducts: [],
+          }),
+        },
+        {
+          type: 'RUN_FINISHED',
+          runId: 'run-derive-no-recovery',
+          model: 'gemini-3.1-pro-preview',
+          timestamp: 2,
+          finishReason: 'stop',
+        },
+      ]),
+      answerTone: 'casual',
+      classification: severeClassification,
+      route: {
+        provider: 'gemini',
+        model: 'gemini-3.1-pro-preview',
+      },
+      latestText: 'best storm to spot currently?',
+      recoverToolResults: async () => [],
+    })) {
+      streamed.push(chunk)
+    }
+
+    const outputText = streamed
+      .filter((chunk) => chunk.type === 'TEXT_MESSAGE_CONTENT')
+      .map((chunk) => String(chunk.content ?? chunk.delta ?? ''))
+      .join('')
+
+    expect(outputText).toContain(
+      "I don't have enough live severe-weather data yet to call a starting corridor. Check back after the next radar or model update.",
+    )
+    expect(outputText).not.toContain(
+      'Why RainCheck thinks that: Radar Nowcast evidence for Columbus',
+    )
   })
 
   it('falls back to a short data-limitation message when recovery cannot build a better answer', async () => {
@@ -635,6 +953,7 @@ describe('streamValidatedSevereWeatherResponse', () => {
           finishReason: 'stop',
         },
       ]),
+      answerTone: 'casual',
       classification: severeClassification,
       route: {
         provider: 'gemini',
@@ -653,7 +972,7 @@ describe('streamValidatedSevereWeatherResponse', () => {
       .join('')
 
     expect(outputText).toContain(
-      'RainCheck could not assemble enough live severe-weather evidence to support a starting chase corridor yet.',
+      "I don't have enough live severe-weather data yet to call a starting corridor. Check back after the next radar or model update.",
     )
     expect(outputText).not.toContain('cannot provide guidance for storm chasing')
   })

@@ -157,6 +157,27 @@ ChaseGuidanceLevel = Literal[
     "full-route",
 ]
 
+TimeDisplay = Literal[
+    "user-local",
+    "dual",
+    "target-local",
+]
+
+AnswerTone = Literal[
+    "casual",
+    "professional",
+]
+
+AnswerMode = Literal["single", "compare", "rank"]
+
+CandidateMode = Literal["named", "discovered", "mixed"]
+
+RankingObjective = Literal[
+    "severe-favorability",
+    "beach-day",
+    "pleasant-weather",
+]
+
 EvidenceKind = Literal[
     "api",
     "page",
@@ -290,6 +311,7 @@ class WeatherEnvelope(StrictModel):
     units: dict[str, str] = Field(default_factory=dict)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     summary: str
+    normalizedForecast: dict[str, Any] = Field(default_factory=dict)
     data: dict[str, Any] = Field(default_factory=dict)
     citations: list[WeatherCitation] = Field(default_factory=list)
     artifacts: list[ArtifactHandle] = Field(default_factory=list)
@@ -399,6 +421,135 @@ class WeatherConfidence(StrictModel):
     reason: str
 
 
+class ChaseTarget(StrictModel):
+    query: str
+    label: str
+    location: LocationContext
+    regionLabel: str | None = None
+    startLabel: str | None = None
+    stopLabel: str | None = None
+    travelHours: float | None = Field(default=None, ge=0.0, le=24.0)
+    corridorHours: float | None = Field(default=None, ge=0.0, le=12.0)
+    withinNearbyRadius: bool | None = None
+    supportScore: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class NightfallCutoff(StrictModel):
+    event: Literal["civil-dusk", "sunset"]
+    occursAt: datetime
+
+
+class ComparisonCandidateInput(StrictModel):
+    query: str | None = None
+    label: str | None = None
+    location: LocationContext | None = None
+    source: Literal[
+        "user",
+        "follow-up-context",
+        "beach-discovery",
+        "severe-discovery",
+    ] = "user"
+    reason: str | None = None
+
+
+class ComparisonCandidate(StrictModel):
+    query: str | None = None
+    label: str
+    location: LocationContext
+    source: Literal[
+        "user",
+        "follow-up-context",
+        "beach-discovery",
+        "severe-discovery",
+    ] = "user"
+    reason: str | None = None
+
+
+class ComparisonDiscoveryScope(StrictModel):
+    category: Literal["beach", "severe-weather"]
+    locationQuery: str | None = None
+    location: LocationContext | None = None
+    radiusKm: int = Field(default=180, ge=1, le=500)
+
+
+class ComparisonCandidateAnalysis(StrictModel):
+    candidate: ComparisonCandidate
+    currentConditions: WeatherEnvelope | None = None
+    forecast: WeatherEnvelope | None = None
+    alerts: WeatherEnvelope | None = None
+    severeContext: WeatherEnvelope | None = None
+    marineContext: WeatherEnvelope | None = None
+    supportingBundles: list[DerivationBundle] = Field(default_factory=list)
+
+
+class ComparedCandidate(StrictModel):
+    candidate: ComparisonCandidate
+    rank: int = Field(ge=1)
+    score: float = Field(ge=0.0, le=1.0)
+    confidence: WeatherConfidence
+    summary: str
+    why: str
+    supportingSignals: list[str] = Field(default_factory=list)
+    conflicts: list[str] = Field(default_factory=list)
+    recommendedCards: list[ProductCard] = Field(default_factory=list)
+
+
+class ComparisonContext(StrictModel):
+    workflow: str
+    answerMode: AnswerMode
+    candidateMode: CandidateMode
+    rankLimit: int = Field(ge=1, le=12)
+    rankingObjective: RankingObjective
+    originLocation: LocationContext | None = None
+    discoveryScope: ComparisonDiscoveryScope | None = None
+    candidates: list[ComparisonCandidate] = Field(default_factory=list)
+
+
+class CompareWeatherToolRequest(StrictModel):
+    userQuestion: str = Field(min_length=1, max_length=4000)
+    workflow: str = Field(min_length=1)
+    answerMode: AnswerMode
+    candidateMode: CandidateMode
+    rankLimit: int = Field(default=1, ge=1, le=12)
+    rankingObjective: RankingObjective
+    originLocation: LocationContext | None = None
+    displayTimezone: str | None = None
+    answerTone: AnswerTone = "casual"
+    timeDisplay: TimeDisplay = "user-local"
+    discoveryScope: ComparisonDiscoveryScope | None = None
+    candidates: list[ComparisonCandidateInput] = Field(default_factory=list)
+
+
+class CompareWeatherRequest(StrictModel):
+    userQuestion: str = Field(min_length=1, max_length=4000)
+    workflow: str = Field(min_length=1)
+    answerMode: AnswerMode
+    candidateMode: CandidateMode
+    rankLimit: int = Field(default=1, ge=1, le=12)
+    rankingObjective: RankingObjective
+    originLocation: LocationContext | None = None
+    displayTimezone: str | None = None
+    answerTone: AnswerTone = "casual"
+    timeDisplay: TimeDisplay = "user-local"
+    discoveryScope: ComparisonDiscoveryScope | None = None
+    candidates: list[ComparisonCandidateAnalysis] = Field(min_length=1, max_length=12)
+
+
+class CompareWeatherBundle(StrictModel):
+    answerMode: AnswerMode
+    rankingObjective: RankingObjective
+    rankLimit: int = Field(ge=1, le=12)
+    bottomLine: str
+    confidence: WeatherConfidence
+    whyRainCheckThinksThat: str
+    sharedUncertainty: str | None = None
+    winner: ComparedCandidate | None = None
+    rankedCandidates: list[ComparedCandidate] = Field(default_factory=list)
+    recommendedCards: list[ProductCard] = Field(default_factory=list)
+    citations: list[CitationBundle] = Field(default_factory=list)
+    comparisonContext: ComparisonContext | None = None
+
+
 class SynthesisBundle(StrictModel):
     bottomLine: str
     mostLikelyScenario: str
@@ -420,6 +571,12 @@ class SynthesizeRequest(StrictModel):
     region: WeatherRegion
     timeWindow: WeatherTimeWindow
     chaseGuidanceLevel: ChaseGuidanceLevel = "analysis-only"
+    originLocation: LocationContext | None = None
+    displayTimezone: str | None = None
+    answerTone: AnswerTone = "casual"
+    timeDisplay: TimeDisplay = "user-local"
+    selectedTarget: ChaseTarget | None = None
+    nightfall: NightfallCutoff | None = None
     evidenceProducts: list[EvidenceProduct] = Field(default_factory=list)
     supportingBundles: list[DerivationBundle] = Field(default_factory=list)
 

@@ -2,6 +2,7 @@ export type ChatLocationOverride = {
   label: string
   latitude?: number
   longitude?: number
+  timezone?: string
 }
 
 export type StoredLocationPreference =
@@ -39,6 +40,10 @@ function normalizeLocationOverride(
     label,
     latitude: isFiniteNumber(value.latitude) ? value.latitude : undefined,
     longitude: isFiniteNumber(value.longitude) ? value.longitude : undefined,
+    timezone:
+      typeof value.timezone === 'string' && value.timezone.trim()
+        ? value.timezone.trim()
+        : undefined,
   }
 }
 

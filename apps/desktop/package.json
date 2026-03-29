@@ -2,12 +2,13 @@
   "name": "@raincheck/desktop",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "main": "dist/main.js",
   "scripts": {
-    "dev": "pnpm build && wait-on tcp:3000 && electron --enable-logging ./dist/main.js",
+    "dev": "node ./scripts/dev.cjs",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
     "lint": "biome check src",
     "format": "biome format --write src"
   },
@@ -17,6 +18,7 @@
   "devDependencies": {
     "@types/node": "^24.5.2",
     "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
     "wait-on": "^9.0.4"
   }
 }

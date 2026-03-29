@@ -13,6 +13,7 @@ function severeEnvelope() {
       name: 'Yorkville, Illinois, United States',
       latitude: 41.64,
       longitude: -88.45,
+      timezone: 'America/Chicago',
       resolvedBy: 'open-meteo-geocoding',
     },
     units: {
@@ -67,15 +68,36 @@ describe('synthesizeWeatherConclusion', () => {
       userQuestion:
         'im in yorkville il whats the best plan to follow these upcoming storms to chase a tornado. what time and where should i start the chase',
       workflow: 'severe-weather',
+      displayTimezone: 'America/Chicago',
+      timeDisplay: 'user-local',
+      originLocation: {
+        name: 'Yorkville, Illinois, United States',
+        timezone: 'America/Chicago',
+      },
+      selectedTarget: {
+        label: 'Springfield to Bloomington-Normal in central Illinois',
+        location: {
+          timezone: 'America/Chicago',
+        },
+        startLabel: 'Springfield',
+        stopLabel: 'Bloomington-Normal',
+        travelHours: 2.7,
+        corridorHours: 1.1,
+        withinNearbyRadius: true,
+      },
+      nightfall: {
+        event: 'civil-dusk',
+        occursAt: '2026-03-26T00:15:00Z',
+      },
       severeContext: severeEnvelope(),
     })
 
     expect(result.bottomLine).toContain('From Yorkville')
-    expect(result.bottomLine.toLowerCase()).toContain('start near')
-    expect(result.bottomLine.toLowerCase()).toContain('corridor')
-    expect(result.mostLikelyScenario.toLowerCase()).toContain(
-      '4 pm to 10 pm thursday local time',
+    expect(result.bottomLine).toContain(
+      'Springfield to Bloomington-Normal in central Illinois',
     )
+    expect(result.mostLikelyScenario).toContain('Bloomington-Normal')
+    expect(result.mostLikelyScenario).toContain('civil dusk around')
     expect(result.confidence.level).toBe('medium')
   })
 
@@ -112,6 +134,27 @@ describe('synthesizeWeatherConclusion', () => {
       userQuestion:
         'where is the best spot to start chasing the storms today and what time should i get there',
       workflow: 'severe-weather',
+      displayTimezone: 'America/Chicago',
+      timeDisplay: 'user-local',
+      originLocation: {
+        name: 'Chicago, Illinois, United States',
+        timezone: 'America/Chicago',
+      },
+      selectedTarget: {
+        label: 'Springfield to Bloomington-Normal in central Illinois',
+        location: {
+          timezone: 'America/Chicago',
+        },
+        startLabel: 'Springfield',
+        stopLabel: 'Bloomington-Normal',
+        travelHours: 3.1,
+        corridorHours: 1,
+        withinNearbyRadius: false,
+      },
+      nightfall: {
+        event: 'civil-dusk',
+        occursAt: '2026-03-26T00:15:00Z',
+      },
       severeContext: {
         ...severeEnvelope(),
         location: {
@@ -121,15 +164,62 @@ describe('synthesizeWeatherConclusion', () => {
           longitude: -89,
           region: 'Illinois',
           country: 'United States',
+          timezone: 'America/Chicago',
           resolvedBy: 'open-meteo-geocoding',
         },
       },
     })
 
-    expect(result.bottomLine).not.toContain('From Illinois')
+    expect(result.bottomLine).not.toContain('within Illinois')
     expect(result.bottomLine).toContain(
-      'The best-supported starting corridor today is within Illinois',
+      'Nothing within about 3 hours of Chicago',
     )
+    expect(result.bottomLine).toContain(
+      'Springfield to Bloomington-Normal in central Illinois',
+    )
+    expect(result.mostLikelyScenario).toContain('local time')
+    expect(result.mostLikelyScenario).not.toContain('UTC')
+  })
+
+  it('supports dual-time formatting when the origin and target time zones differ', () => {
+    const result = synthesizeWeatherConclusion({
+      userQuestion: 'Where should I start chasing from Chicago today?',
+      workflow: 'severe-weather',
+      displayTimezone: 'America/Chicago',
+      timeDisplay: 'dual',
+      originLocation: {
+        name: 'Chicago, Illinois, United States',
+        timezone: 'America/Chicago',
+      },
+      selectedTarget: {
+        label: 'Dayton to Lima in western Ohio',
+        location: {
+          timezone: 'America/New_York',
+        },
+        startLabel: 'Dayton',
+        stopLabel: 'Lima',
+        travelHours: 5.6,
+        corridorHours: 1.2,
+        withinNearbyRadius: false,
+      },
+      nightfall: {
+        event: 'sunset',
+        occursAt: '2026-03-26T00:40:00Z',
+      },
+      severeContext: {
+        ...severeEnvelope(),
+        location: {
+          ...severeEnvelope().location,
+          query: 'Ohio',
+          name: 'Ohio, United States',
+          region: 'Ohio',
+          timezone: 'America/New_York',
+        },
+      },
+    })
+
+    expect(result.mostLikelyScenario).toContain('local time')
+    expect(result.mostLikelyScenario).toContain('target time')
   })
 
   it('keeps short-range model questions model-first even when nowcast context is available', () => {

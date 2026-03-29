@@ -99,6 +99,7 @@ export type WeatherLocationSummary = {
   longitude: number
   region?: string
   country?: string
+  timezone?: string
   resolvedBy: string
 }
 

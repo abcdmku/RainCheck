@@ -1,4 +1,5 @@
 import {
+  compareWeatherCandidatesToolDef,
   generateWeatherArtifactToolDef,
   getAlertsToolDef,
   getAviationContextToolDef,
@@ -43,8 +44,22 @@ import {
   formatIsoLocalTimeRange,
   normalizeTimingLanguage,
 } from '../weather/timing-language'
+import {
+  isBroadSevereLocatorQuestion,
+  resolveOriginLocation,
+  selectBroadChaseTarget,
+} from '../weather/chase-targeting'
+import {
+  buildComparisonLimitationContext,
+  runWeatherComparison,
+} from '../weather/comparison'
 import { getTropicalWeather } from '../weather/tropical'
 import { getUpperAirSoundings } from '../weather/upper-air'
+import {
+  applyAnswerToneToText,
+  buildComparisonLimitationText,
+} from './answer-tone'
+import type { WeatherAnswerContext } from './weather-context'
 
 function withProgress<TArgs, TResult>(
   label: string,
@@ -307,6 +322,8 @@ function wrapAlerts(
 export function buildServerTools(
   app: FastifyInstance,
   classification: RequestClassification,
+  context?: WeatherAnswerContext,
+  messages?: Array<any>,
 ) {
   const resolveLocation = resolveLocationToolDef.server(
     withProgress('Resolving location', ({ locationQuery }) =>
@@ -341,7 +358,7 @@ export function buildServerTools(
   )
   const severeContext = getSevereContextToolDef.server(
     withProgress('Fetching severe-weather context', ({ locationQuery }) =>
-      getSevereContext(app, locationQuery),
+      getSevereContext(app, locationQuery ?? 'United States'),
     ),
   )
   const tropical = getTropicalWeatherToolDef.server(
@@ -374,10 +391,136 @@ export function buildServerTools(
       generateArtifact(app, args as any),
     ),
   )
+  const compareWeather = compareWeatherCandidatesToolDef.server(
+    withProgress('Comparing weather candidates', async (args) => {
+      const input = args as any
+      const answerTone = input.answerTone ?? context?.answerTone ?? 'casual'
+      const rankingObjective =
+        input.rankingObjective ??
+        classification.rankingObjective ??
+        (classification.intent === 'severe-weather'
+          ? 'severe-favorability'
+          : 'pleasant-weather')
+      const comparison = await runWeatherComparison({
+        app,
+        classification: {
+          ...classification,
+          answerMode: input.answerMode ?? classification.answerMode,
+          candidateMode: input.candidateMode ?? classification.candidateMode,
+          rankLimit: input.rankLimit ?? classification.rankLimit,
+          rankingObjective,
+        },
+        userQuestion: String(input.userQuestion ?? ''),
+        context,
+        messages,
+        explicitCandidates: Array.isArray(input.candidates)
+          ? input.candidates
+          : undefined,
+        explicitDiscoveryScope: input.discoveryScope,
+        explicitOriginLocation: input.originLocation,
+        answerTone,
+        displayTimezone: input.displayTimezone,
+        timeDisplay: input.timeDisplay,
+      })
+
+      if (comparison) {
+        return comparison
+      }
+
+      const comparisonContext = await buildComparisonLimitationContext({
+        app,
+        classification: {
+          ...classification,
+          answerMode: input.answerMode ?? classification.answerMode,
+          candidateMode: input.candidateMode ?? classification.candidateMode,
+          rankLimit: input.rankLimit ?? classification.rankLimit,
+          rankingObjective,
+        },
+        userQuestion: String(input.userQuestion ?? ''),
+        context,
+        messages,
+        explicitDiscoveryScope: input.discoveryScope,
+        explicitOriginLocation: input.originLocation,
+      })
+
+      return {
+        answerMode: input.answerMode ?? classification.answerMode,
+        rankingObjective,
+        rankLimit: input.rankLimit ?? classification.rankLimit,
+        bottomLine: buildComparisonLimitationText(
+          {
+            ...classification,
+            answerMode: input.answerMode ?? classification.answerMode,
+            candidateMode: input.candidateMode ?? classification.candidateMode,
+          },
+          answerTone,
+        ),
+        confidence: {
+          level: 'low' as const,
+          reason: applyAnswerToneToText(
+            'No valid comparison candidates could be resolved from the request yet.',
+            answerTone,
+          ),
+        },
+        whyRainCheckThinksThat: applyAnswerToneToText(
+          'The ranking can only run after at least one place or search area resolves cleanly.',
+          answerTone,
+        ),
+        rankedCandidates: [],
+        recommendedCards: [],
+        citations: [],
+        comparisonContext,
+      }
+    }),
+  )
   const synthesis = synthesizeWeatherConclusionToolDef.server(
-    withProgress('Synthesizing weather conclusion', async (args) =>
-      synthesizeWeatherConclusion(app, args as any),
-    ),
+    withProgress('Synthesizing weather conclusion', async (args) => {
+      const input = args as any
+      const originLocation =
+        input.originLocation ??
+        (await resolveOriginLocation({
+          app,
+          context,
+          fallbackLocation:
+            input.region?.type === 'point' && input.region?.location
+              ? input.region.location
+              : null,
+        }))
+
+      let selectedTarget = input.selectedTarget
+      let nightfall = input.nightfall
+      if (
+        classification.intent === 'severe-weather' &&
+        isBroadSevereLocatorQuestion(classification, String(input.userQuestion ?? '')) &&
+        originLocation &&
+        !selectedTarget
+      ) {
+        try {
+          const chaseTarget = await selectBroadChaseTarget({
+            app,
+            originLocation,
+            referenceTime: input.timeWindow?.referenceTime,
+          })
+          selectedTarget = chaseTarget?.selectedTarget
+          nightfall = chaseTarget?.nightfall
+        } catch {
+          // Best-effort enrichment only.
+        }
+      }
+
+      return synthesizeWeatherConclusion(app, {
+        ...input,
+        originLocation: originLocation ?? undefined,
+        displayTimezone:
+          input.displayTimezone ??
+          context?.displayTimezone ??
+          context?.locationHint?.timezone,
+        answerTone: input.answerTone ?? context?.answerTone ?? 'casual',
+        timeDisplay: input.timeDisplay ?? context?.timeDisplay ?? 'user-local',
+        selectedTarget: selectedTarget ?? undefined,
+        nightfall: nightfall ?? undefined,
+      })
+    }),
   )
 
   const shortRangeDerive = deriveShortRangeWeatherToolDef.server(
@@ -427,9 +570,19 @@ export function buildServerTools(
   const selectedDerivations = planWeatherDerivations(classification).map(
     (endpoint) => deriveToolByEndpoint[endpoint],
   )
-  const synthesisTools = shouldSynthesize(classification) ? [synthesis] : []
+  const synthesisTools =
+    classification.answerMode === 'single' && shouldSynthesize(classification)
+      ? [synthesis]
+      : []
+  const comparisonTools =
+    classification.answerMode !== 'single' ? [compareWeather] : []
   const buildWeatherToolSet = (extraTools: Array<ServerTool<any, any>>) =>
-    buildToolSet(coreTools, [...extraTools, ...synthesisTools, ...artifactTools])
+    buildToolSet(coreTools, [
+      ...extraTools,
+      ...comparisonTools,
+      ...synthesisTools,
+      ...artifactTools,
+    ])
 
   switch (classification.intent) {
     case 'aviation':

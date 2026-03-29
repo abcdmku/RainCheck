@@ -1205,7 +1205,10 @@ def _global_evidence(
                 field_name="medium-range-hazards",
                 field_type="official_product",
                 units="categorical",
-                summary=f"WPC hazard framing supports a meaningful impact corridor that still needs ensemble spread accounted for near {region_label}.",
+                summary=(
+                    f"WPC hazard framing points to a meaningful impact corridor near {region_label}, "
+                    "but ensemble spread still needs to be accounted for."
+                ),
                 signal_score=0.74,
                 confidence=0.8,
                 kind="page",

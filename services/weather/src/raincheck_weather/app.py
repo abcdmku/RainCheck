@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from .artifacts import generate_weather_artifact
 from .catalog import build_catalog
+from .comparison import compare_weather
 from .derivations import (
     derive_global,
     derive_hydrology,
@@ -19,6 +20,8 @@ from .models import (
     ArtifactRequest,
     ArtifactResponse,
     CatalogResponse,
+    CompareWeatherBundle,
+    CompareWeatherRequest,
     CurrentWeatherRequest,
     CurrentWeatherResponse,
     DerivationBundle,
@@ -174,6 +177,17 @@ async def synthesize_endpoint(
     settings: Settings = Depends(get_settings),
 ) -> SynthesisBundle:
     return synthesize_weather(settings, payload)
+
+
+@app.post(
+    "/compare",
+    response_model=CompareWeatherBundle,
+    response_model_exclude_none=True,
+)
+async def compare_endpoint(
+    payload: CompareWeatherRequest,
+) -> CompareWeatherBundle:
+    return compare_weather(payload)
 
 
 @app.post("/artifacts/meteogram", response_model=ArtifactResponse)

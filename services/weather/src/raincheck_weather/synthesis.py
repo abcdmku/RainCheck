@@ -21,6 +21,25 @@ from .models import (
 )
 from .settings import Settings
 
+_CASUAL_TONE_REPLACEMENTS: list[tuple[str, str]] = [
+    (r"\bWPC hazard framing\b", "The WPC hazards outlook"),
+    (r"\bmeaningful impact corridor\b", "decent storm corridor"),
+    (
+        r"\bensemble spread still needs to be accounted for\b",
+        "the models still disagree enough that the setup could shift",
+    ),
+    (r"\bensemble spread\b", "model disagreement"),
+    (r"\bsynoptic\b", "large-scale"),
+    (r"\bmesoscale details\b", "small setup details"),
+    (r"\bmesoscale\b", "storm-scale"),
+    (r"\bdiscrete storms\b", "separate storms"),
+    (r"\bupscale growth\b", "storms merging together"),
+    (r"\bboundary placement\b", "where the boundary sets up"),
+    (r"\bstorm mode\b", "storm type"),
+    (r"\bweighted strength\b", "overall strength"),
+    (r"\bunresolved conflicts\b", "open questions"),
+]
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -72,6 +91,24 @@ def _confidence_level(score: float) -> str:
 
 def _confidence(reason: str, score: float) -> WeatherConfidence:
     return WeatherConfidence(level=_confidence_level(score), reason=reason)
+
+
+def _normalize_spacing(text: str) -> str:
+    return re.sub(r"\s+", " ", text).replace(" ,", ",").strip()
+
+
+def _tone_text(text: str, tone: str) -> str:
+    if tone == "professional":
+        return _normalize_spacing(text)
+
+    output = text
+    for pattern, replacement in _CASUAL_TONE_REPLACEMENTS:
+        output = re.sub(pattern, replacement, output, flags=re.IGNORECASE)
+    return _normalize_spacing(output)
+
+
+def _tone_list(values: list[str], tone: str) -> list[str]:
+    return [_tone_text(value, tone) for value in values]
 
 
 def _artifact_handle(response) -> ArtifactHandle:
@@ -267,7 +304,98 @@ def _short_location(region_label: str) -> str:
     return region_label.split(",")[0].strip() or region_label
 
 
+def _looks_like_source_led_summary(summary: str) -> bool:
+    return bool(
+        re.match(r"^(RTMA|URMA|HRRR|RAP|NAM|HREF|SPC|NEXRAD|MRMS|NBM)\b", summary.strip())
+    )
+
+
+def _looks_like_conditional_storm_summary(summary: str) -> bool:
+    lowered = summary.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "still depends on",
+            "can still shift",
+            "position errors",
+            "conditional",
+            "uncertain",
+            "boundary placement",
+        )
+    )
+
+
+def _normalized_summary_clause(summary: str) -> str:
+    normalized = " ".join(summary.split()).strip()
+    if not normalized:
+        return normalized
+    if _looks_like_source_led_summary(normalized):
+        return normalized
+    if normalized[0].isupper():
+        return normalized[0].lower() + normalized[1:]
+    return normalized
+
+
+def _normalized_summary_sentence(summary: str) -> str:
+    normalized = " ".join(summary.split()).strip()
+    if not normalized:
+        return normalized
+    if normalized[-1] not in ".!?":
+        return f"{normalized}."
+    return normalized
+
+
+def _fallback_bottom_line(
+    request: SynthesizeRequest,
+    region_label: str,
+    top: EvidenceProduct,
+) -> str:
+    if _looks_like_conditional_storm_summary(top.summary):
+        if request.workflow in {"severe-weather", "short-range-model", "blend-analysis", "weather-analysis"}:
+            return (
+                f"The current storm-scale evidence near {region_label} is still too conditional "
+                "to support one best storm target yet."
+            )
+        return (
+            f"The latest evidence near {region_label} is still too conditional "
+            "to support a stronger call yet."
+        )
+
+    if request.workflow in {"severe-weather", "short-range-model", "blend-analysis", "weather-analysis"}:
+        clause = _normalized_summary_clause(top.summary)
+        if _looks_like_source_led_summary(clause):
+            return f"The strongest supported storm signal near {region_label} currently is that {clause}"
+        return f"The strongest supported storm signal near {region_label} currently favors {clause}"
+
+    return _normalized_summary_sentence(top.summary)
+
+
+def _zoneinfo_or_none(value: str | None) -> ZoneInfo | None:
+    if not value:
+        return None
+    try:
+        return ZoneInfo(value)
+    except Exception:
+        return None
+
+
+def _target_location_context(request: SynthesizeRequest):
+    if request.selectedTarget is not None:
+        return request.selectedTarget.location
+    if isinstance(request.region, WeatherRegionPoint):
+        return request.region.location
+    return None
+
+
+def _origin_short_location(request: SynthesizeRequest, region_label: str) -> str:
+    if request.originLocation is not None:
+        return _short_location(request.originLocation.display_name())
+    return _short_location(region_label)
+
+
 def _is_broad_region_request(request: SynthesizeRequest, region_label: str) -> bool:
+    if request.selectedTarget is not None:
+        return False
     if not isinstance(request.region, WeatherRegionPoint):
         return True
 
@@ -281,25 +409,52 @@ def _is_broad_region_request(request: SynthesizeRequest, region_label: str) -> b
 def _format_clock(value: datetime) -> str:
     hour = value.hour % 12 or 12
     suffix = "AM" if value.hour < 12 else "PM"
+    if value.minute:
+        return f"{hour}:{value.minute:02d} {suffix}"
     return f"{hour} {suffix}"
+
+
+def _display_timezones(request: SynthesizeRequest) -> tuple[ZoneInfo | None, ZoneInfo | None]:
+    target_location = _target_location_context(request)
+    target_tz = _zoneinfo_or_none(target_location.timezone if target_location else None)
+    user_tz = _zoneinfo_or_none(request.displayTimezone)
+    if user_tz is None and request.originLocation is not None:
+        user_tz = _zoneinfo_or_none(request.originLocation.timezone)
+    if user_tz is None:
+        user_tz = target_tz
+    return user_tz, target_tz
+
+
+def _format_time_range(start: datetime, end: datetime) -> str:
+    return f"{_format_clock(start)} to {_format_clock(end)}"
 
 
 def _time_window_label(request: SynthesizeRequest) -> str:
     start = request.timeWindow.start
     end = request.timeWindow.end
-    timezone_label = "UTC"
+    user_tz, target_tz = _display_timezones(request)
 
-    if isinstance(request.region, WeatherRegionPoint) and request.region.location.timezone:
-        try:
-            tz = ZoneInfo(request.region.location.timezone)
-        except Exception:
-            tz = None
-        if tz is not None:
-            start = start.astimezone(tz)
-            end = end.astimezone(tz)
-            timezone_label = "local time"
+    if request.timeDisplay == "target-local" and target_tz is not None:
+        return f"{_format_time_range(start.astimezone(target_tz), end.astimezone(target_tz))} target local time"
 
-    return f"{_format_clock(start)} to {_format_clock(end)} {timezone_label}"
+    if (
+        request.timeDisplay == "dual"
+        and user_tz is not None
+        and target_tz is not None
+        and user_tz.key != target_tz.key
+    ):
+        return (
+            f"{_format_time_range(start.astimezone(user_tz), end.astimezone(user_tz))} local time "
+            f"({_format_time_range(start.astimezone(target_tz), end.astimezone(target_tz))} target time)"
+        )
+
+    if user_tz is not None:
+        return f"{_format_time_range(start.astimezone(user_tz), end.astimezone(user_tz))} local time"
+
+    if target_tz is not None:
+        return f"{_format_time_range(start.astimezone(target_tz), end.astimezone(target_tz))} target local time"
+
+    return _format_time_range(start, end)
 
 
 def _effective_chase_guidance_level(request: SynthesizeRequest, confidence_score: float) -> str:
@@ -327,6 +482,9 @@ def _direction_phrase(question: str) -> str | None:
 
 
 def _target_label(request: SynthesizeRequest, region_label: str, guidance_level: str) -> str:
+    if request.selectedTarget is not None:
+        return request.selectedTarget.label
+
     directional_hint = _direction_phrase(request.userQuestion)
     if directional_hint:
         return directional_hint
@@ -344,6 +502,64 @@ def _target_label(request: SynthesizeRequest, region_label: str, guidance_level:
     return f"the roads southwest of {short_location}"
 
 
+def _hours_label(value: float) -> str:
+    rounded = round(value, 1)
+    if abs(rounded - 1.0) < 0.05:
+        return "about 1 hour"
+    if float(rounded).is_integer():
+        return f"about {int(rounded)} hours"
+    return f"about {rounded:.1f} hours"
+
+
+def _nightfall_label(request: SynthesizeRequest) -> str | None:
+    if request.nightfall is None:
+        return None
+
+    event_label = "civil dusk" if request.nightfall.event == "civil-dusk" else "sunset"
+    user_tz, target_tz = _display_timezones(request)
+    value = request.nightfall.occursAt
+
+    if request.timeDisplay == "target-local" and target_tz is not None:
+        return f"{event_label} around {_format_clock(value.astimezone(target_tz))} target local time"
+
+    if (
+        request.timeDisplay == "dual"
+        and user_tz is not None
+        and target_tz is not None
+        and user_tz.key != target_tz.key
+    ):
+        return (
+            f"{event_label} around {_format_clock(value.astimezone(user_tz))} local time "
+            f"({_format_clock(value.astimezone(target_tz))} target time)"
+        )
+
+    if user_tz is not None:
+        return f"{event_label} around {_format_clock(value.astimezone(user_tz))} local time"
+
+    if target_tz is not None:
+        return f"{event_label} around {_format_clock(value.astimezone(target_tz))} target local time"
+
+    return f"{event_label} around {_format_clock(value)}"
+
+
+def _track_limit_sentence(request: SynthesizeRequest) -> str | None:
+    target = request.selectedTarget
+    nightfall_label = _nightfall_label(request)
+
+    if target is not None and target.stopLabel:
+        base = f"Track no farther than {target.stopLabel}"
+        if target.corridorHours is not None:
+            base = f"{base}, roughly {_hours_label(target.corridorHours)} more down the corridor"
+        if nightfall_label:
+            return f"{base}, and be wrapping up by {nightfall_label}."
+        return f"{base}."
+
+    if nightfall_label:
+        return f"Plan to wrap up by {nightfall_label}."
+
+    return None
+
+
 def _severe_bottom_line(
     request: SynthesizeRequest,
     products: list[EvidenceProduct],
@@ -351,16 +567,77 @@ def _severe_bottom_line(
 ) -> tuple[str, str, str | None]:
     region_label = _region_label(request.region)
     short_location = _short_location(region_label)
+    origin_short_location = _origin_short_location(request, region_label)
     time_label = _time_window_label(request)
     effective_level = _effective_chase_guidance_level(request, confidence_score)
     target_label = _target_label(request, region_label, effective_level)
     broad_region = _is_broad_region_request(request, region_label)
+    track_limit = _track_limit_sentence(request)
     downgrade_note = None
 
     if effective_level != request.chaseGuidanceLevel:
         downgrade_note = (
             f"Precision was stepped down from {request.chaseGuidanceLevel.replace('-', ' ')} "
             f"to {effective_level.replace('-', ' ')} because the evidence is not tight enough yet."
+        )
+
+    if request.selectedTarget is not None:
+        travel_note = (
+            f"It is {_hours_label(request.selectedTarget.travelHours)} from {origin_short_location} to the start."
+            if request.selectedTarget.travelHours is not None
+            else None
+        )
+        if effective_level == "analysis-only":
+            return (
+                f"The best-supported severe setup from {origin_short_location} favors {target_label} during the {time_label} window.",
+                (
+                    f"{travel_note} {track_limit}".strip()
+                    if travel_note or track_limit
+                    else f"The broader {region_label} setup is still sensitive to boundary placement and storm mode."
+                ),
+                downgrade_note,
+            )
+
+        if effective_level == "general-target":
+            if request.selectedTarget.withinNearbyRadius is False:
+                return (
+                    f"Nothing within about 3 hours of {origin_short_location} is as well supported right now. The nearest better-supported start is {target_label}, with arrival in the {time_label} window.",
+                    (
+                        f"{travel_note} {track_limit}".strip()
+                        if travel_note or track_limit
+                        else f"The favored starting corridor is centered on {target_label}, but boundary placement can still shift it."
+                    ),
+                    downgrade_note,
+                )
+            return (
+                f"From {origin_short_location}, the best-supported start is {target_label}, with arrival in the {time_label} window.",
+                (
+                    f"{travel_note} {track_limit}".strip()
+                    if travel_note or track_limit
+                    else f"The favored starting corridor stays centered on {target_label}, but boundary placement can still shift it."
+                ),
+                downgrade_note,
+            )
+
+        if effective_level == "exact-target":
+            return (
+                f"From {origin_short_location}, the best-supported target right now is {target_label} during the {time_label} window.",
+                (
+                    f"{travel_note} {track_limit}".strip()
+                    if travel_note or track_limit
+                    else f"{target_label} offers the best chance to stay near discrete storms before clustering later."
+                ),
+                downgrade_note,
+            )
+
+        return (
+            f"From {origin_short_location}, stage toward {target_label} before the {time_label} window and keep the route parallel to the favored storm track.",
+            (
+                f"{travel_note} {track_limit}".strip()
+                if travel_note or track_limit
+                else "Leave yourself a south or east adjustment once the dominant storm track is clear."
+            ),
+            downgrade_note,
         )
 
     if effective_level == "analysis-only":
@@ -462,17 +739,30 @@ def _all_evidence(request: SynthesizeRequest) -> list[EvidenceProduct]:
 
 
 def synthesize_weather(settings: Settings, request: SynthesizeRequest) -> SynthesisBundle:
+    answer_tone = request.answerTone
     products = _all_evidence(request)
     if not products:
         return SynthesisBundle(
-            bottomLine="RainCheck does not have enough derived weather evidence to make a supported call yet.",
-            mostLikelyScenario="Fetch one or more derive endpoints before attempting synthesis.",
+            bottomLine=_tone_text(
+                "RainCheck does not have enough derived weather evidence to make a supported call yet.",
+                answer_tone,
+            ),
+            mostLikelyScenario=_tone_text(
+                "Fetch one or more derive endpoints before attempting synthesis.",
+                answer_tone,
+            ),
             alternateScenarios=[],
-            confidence=_confidence("No derived evidence was supplied to synthesis.", 0.3),
-            agreementSummary="No derivation bundles or evidence products were supplied.",
+            confidence=_confidence(
+                _tone_text("No derived evidence was supplied to synthesis.", answer_tone),
+                0.3,
+            ),
+            agreementSummary=_tone_text(
+                "No derivation bundles or evidence products were supplied.",
+                answer_tone,
+            ),
             keySupportingSignals=[],
-            keyConflicts=["No evidence products were available."],
-            bustRisks=["Fetch derived evidence first."],
+            keyConflicts=[_tone_text("No evidence products were available.", answer_tone)],
+            bustRisks=[_tone_text("Fetch derived evidence first.", answer_tone)],
             recommendedCards=[],
             recommendedArtifacts=[],
             citations=[],
@@ -530,21 +820,27 @@ def synthesize_weather(settings: Settings, request: SynthesizeRequest) -> Synthe
     ))[:3]
 
     return SynthesisBundle(
-        bottomLine=severe_bottom_line or f"The best-supported call for {region_label} is {top.summary}",
-        mostLikelyScenario=severe_most_likely or top.summary,
-        alternateScenarios=alternate_scenarios,
+        bottomLine=_tone_text(
+            severe_bottom_line or _fallback_bottom_line(request, region_label, top),
+            answer_tone,
+        ),
+        mostLikelyScenario=_tone_text(severe_most_likely or top.summary, answer_tone),
+        alternateScenarios=_tone_list(alternate_scenarios, answer_tone),
         confidence=_confidence(
-            (
+            _tone_text(
+                (
                 "Confidence reflects the weighted strength of the leading evidence and the number of unresolved conflicts."
                 if not downgrade_note
                 else "Confidence reflects the weighted strength of the leading evidence; RainCheck stepped down the requested chase precision because the signal is not tight enough yet."
+                ),
+                answer_tone,
             ),
             confidence_score,
         ),
-        agreementSummary=_agreement_summary(request, products),
-        keySupportingSignals=[product.summary for product in products[:5]],
-        keyConflicts=conflicts,
-        bustRisks=bust_risks,
+        agreementSummary=_tone_text(_agreement_summary(request, products), answer_tone),
+        keySupportingSignals=_tone_list([product.summary for product in products[:5]], answer_tone),
+        keyConflicts=_tone_list(conflicts, answer_tone),
+        bustRisks=_tone_list(bust_risks, answer_tone),
         recommendedCards=cards,
         recommendedArtifacts=artifacts,
         citations=_citations(products),

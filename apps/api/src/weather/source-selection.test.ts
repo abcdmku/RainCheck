@@ -11,6 +11,9 @@ describe('chooseSourceManifests', () => {
       locationRequired: true,
       needsArtifact: false,
       chaseGuidanceLevel: 'analysis-only',
+      answerMode: 'single',
+      candidateMode: 'named',
+      rankLimit: 1,
     })
 
     expect(sources[0]?.sourceId).toBe('weather-gov')
@@ -27,6 +30,9 @@ describe('chooseSourceManifests', () => {
       locationRequired: true,
       needsArtifact: true,
       chaseGuidanceLevel: 'analysis-only',
+      answerMode: 'single',
+      candidateMode: 'named',
+      rankLimit: 1,
     })
 
     expect(sources[0]?.sourceId).toBe('nwps')
@@ -42,6 +48,9 @@ describe('chooseSourceManifests', () => {
       locationRequired: true,
       needsArtifact: false,
       chaseGuidanceLevel: 'analysis-only',
+      answerMode: 'single',
+      candidateMode: 'named',
+      rankLimit: 1,
     })
 
     expect(sources[0]?.sourceId).toBe('nhc')
@@ -58,6 +67,9 @@ describe('chooseSourceManifests', () => {
       locationRequired: true,
       needsArtifact: false,
       chaseGuidanceLevel: 'analysis-only',
+      answerMode: 'single',
+      candidateMode: 'named',
+      rankLimit: 1,
     })
 
     expect(sources[0]?.sourceId).toBe('wpc-medium')

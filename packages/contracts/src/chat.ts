@@ -1,9 +1,13 @@
 import { z } from 'zod'
 
 import {
+  answerModeSchema,
+  candidateModeSchema,
   chaseGuidanceLevelSchema,
   providerIdSchema,
+  rankingObjectiveSchema,
   taskClassSchema,
+  timeDisplaySchema,
   unitSystemSchema,
   weatherWorkflowSchema,
 } from './base'
@@ -16,6 +20,7 @@ export const locationContextSchema = z.object({
   longitude: z.number(),
   region: z.string().optional(),
   country: z.string().optional(),
+  timezone: z.string().optional(),
   label: z.string().optional(),
 })
 
@@ -34,10 +39,10 @@ const userProviderSettingsSchema = z.object({
 export const userSettingsSchema = z.object({
   theme: z.enum(['system', 'light', 'dark']).default('system'),
   units: unitSchema.default('imperial'),
+  timeDisplay: timeDisplaySchema.default('user-local'),
   defaultLocation: locationContextSchema.nullable().default(null),
   useBrowserLocation: z.boolean().default(false),
   providerPreferences: userProviderSettingsSchema.default({}),
-  byokEnabled: z.boolean().default(false),
   exportSharingEnabled: z.boolean().default(false),
 })
 
@@ -109,6 +114,11 @@ export const messageRecordSchema = z.object({
   createdAt: z.string(),
   model: z.string().nullable().default(null),
   provider: providerIdSchema.nullable().default(null),
+  transport: z.enum(['api', 'local-cli']).nullable().default(null),
+  source: z
+    .enum(['shared-env', 'local-api-key', 'desktop-local-cli'])
+    .nullable()
+    .default(null),
 })
 
 export type MessageRecord = z.infer<typeof messageRecordSchema>
@@ -121,12 +131,21 @@ export type CreateConversationInput = z.infer<
   typeof createConversationInputSchema
 >
 
+export const providerTransportSchema = z.enum(['api', 'local-cli'])
+
+export const providerSourceSchema = z.enum([
+  'shared-env',
+  'local-api-key',
+  'desktop-local-cli',
+])
+
 export const routeDecisionSchema = z.object({
   taskClass: taskClassSchema,
   provider: providerIdSchema,
   model: z.string(),
   reason: z.string(),
-  usedByok: z.boolean(),
+  transport: providerTransportSchema,
+  source: providerSourceSchema,
   availableProviders: z.array(providerIdSchema),
 })
 
@@ -137,6 +156,12 @@ export const requestClassificationSchema = z.object({
   locationRequired: z.boolean(),
   needsArtifact: z.boolean(),
   chaseGuidanceLevel: chaseGuidanceLevelSchema.default('analysis-only'),
+  answerMode: answerModeSchema.default('single'),
+  candidateMode: candidateModeSchema.default('named'),
+  rankLimit: z.number().int().min(1).max(12).default(1),
+  rankingObjective: rankingObjectiveSchema.optional(),
 })
 
 export type RequestClassification = z.infer<typeof requestClassificationSchema>
+export type ProviderTransport = z.infer<typeof providerTransportSchema>
+export type ProviderSource = z.infer<typeof providerSourceSchema>

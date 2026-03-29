@@ -1,6 +1,14 @@
 import { z } from 'zod'
 
-import { chaseGuidanceLevelSchema } from './base'
+import {
+  answerModeSchema,
+  answerToneSchema,
+  candidateModeSchema,
+  chaseGuidanceLevelSchema,
+  rankingObjectiveSchema,
+  timeDisplaySchema,
+  weatherWorkflowSchema,
+} from './base'
 import { citationKindSchema, citationSchema } from './chat'
 
 export const normalizedLocationSchema = z.object({
@@ -10,6 +18,7 @@ export const normalizedLocationSchema = z.object({
   longitude: z.number(),
   region: z.string().optional(),
   country: z.string().optional(),
+  timezone: z.string().optional(),
   resolvedBy: z.string(),
 })
 
@@ -145,13 +154,10 @@ export const weatherTimeWindowSchema = z
     referenceTime: z.string().optional(),
     recentHours: z.number().int().min(0).max(72).optional(),
   })
-  .refine(
-    (value) => Date.parse(value.start) <= Date.parse(value.end),
-    {
-      message: 'weather time windows must start before they end',
-      path: ['start'],
-    },
-  )
+  .refine((value) => Date.parse(value.start) <= Date.parse(value.end), {
+    message: 'weather time windows must start before they end',
+    path: ['start'],
+  })
 
 export const weatherUnitsSchema = z
   .object({
@@ -229,6 +235,125 @@ export const weatherConfidenceSchema = z.object({
   reason: z.string(),
 })
 
+export const chaseTargetSchema = z.object({
+  query: z.string().trim().min(1),
+  label: z.string().trim().min(1),
+  location: normalizedLocationSchema,
+  regionLabel: z.string().trim().min(1).optional(),
+  startLabel: z.string().trim().min(1).optional(),
+  stopLabel: z.string().trim().min(1).optional(),
+  travelHours: z.number().min(0).max(24).optional(),
+  corridorHours: z.number().min(0).max(12).optional(),
+  withinNearbyRadius: z.boolean().optional(),
+  supportScore: z.number().min(0).max(1).optional(),
+})
+
+export const nightfallCutoffSchema = z.object({
+  event: z.enum(['civil-dusk', 'sunset']),
+  occursAt: z.string(),
+})
+
+export const weatherComparisonCandidateInputSchema = z.object({
+  query: z.string().trim().min(1).optional(),
+  label: z.string().trim().min(1).optional(),
+  location: normalizedLocationSchema.optional(),
+  source: z
+    .enum(['user', 'follow-up-context', 'beach-discovery', 'severe-discovery'])
+    .default('user'),
+  reason: z.string().trim().min(1).optional(),
+})
+
+export const weatherComparisonCandidateSchema =
+  weatherComparisonCandidateInputSchema.extend({
+    label: z.string().trim().min(1),
+    location: normalizedLocationSchema,
+  })
+
+export const weatherComparisonDiscoveryScopeSchema = z.object({
+  category: z.enum(['beach', 'severe-weather']),
+  locationQuery: z.string().trim().min(1).optional(),
+  location: normalizedLocationSchema.optional(),
+  radiusKm: z.number().int().min(1).max(500).default(180),
+})
+
+export const weatherComparisonCandidateAnalysisSchema = z.object({
+  candidate: weatherComparisonCandidateSchema,
+  currentConditions: z.lazy(() => weatherToolEnvelopeSchema).optional(),
+  forecast: z.lazy(() => weatherToolEnvelopeSchema).optional(),
+  alerts: z.lazy(() => weatherToolEnvelopeSchema).optional(),
+  severeContext: z.lazy(() => weatherToolEnvelopeSchema).optional(),
+  marineContext: z.lazy(() => weatherToolEnvelopeSchema).optional(),
+  supportingBundles: z.array(z.lazy(() => derivationBundleSchema)).default([]),
+})
+
+export const weatherComparedCandidateSchema = z.object({
+  candidate: weatherComparisonCandidateSchema,
+  rank: z.number().int().positive(),
+  score: z.number().min(0).max(1),
+  confidence: weatherConfidenceSchema,
+  summary: z.string(),
+  why: z.string(),
+  supportingSignals: z.array(z.string()).default([]),
+  conflicts: z.array(z.string()).default([]),
+  recommendedCards: z.array(weatherProductCardSchema).default([]),
+})
+
+export const weatherComparisonContextSchema = z.object({
+  workflow: weatherWorkflowSchema,
+  answerMode: answerModeSchema,
+  candidateMode: candidateModeSchema,
+  rankLimit: z.number().int().min(1).max(12),
+  rankingObjective: rankingObjectiveSchema,
+  originLocation: normalizedLocationSchema.optional(),
+  discoveryScope: weatherComparisonDiscoveryScopeSchema.optional(),
+  candidates: z.array(weatherComparisonCandidateSchema).default([]),
+})
+
+export const weatherComparisonToolRequestSchema = z.object({
+  userQuestion: z.string().trim().min(1),
+  workflow: weatherWorkflowSchema,
+  answerMode: answerModeSchema,
+  candidateMode: candidateModeSchema,
+  rankLimit: z.number().int().min(1).max(12).default(1),
+  rankingObjective: rankingObjectiveSchema,
+  originLocation: normalizedLocationSchema.optional(),
+  displayTimezone: z.string().trim().min(1).optional(),
+  answerTone: answerToneSchema.default('casual'),
+  timeDisplay: timeDisplaySchema.default('user-local'),
+  discoveryScope: weatherComparisonDiscoveryScopeSchema.optional(),
+  candidates: z.array(weatherComparisonCandidateInputSchema).default([]),
+})
+
+export const weatherComparisonRequestSchema = z.object({
+  userQuestion: z.string().trim().min(1),
+  workflow: weatherWorkflowSchema,
+  answerMode: answerModeSchema,
+  candidateMode: candidateModeSchema,
+  rankLimit: z.number().int().min(1).max(12).default(1),
+  rankingObjective: rankingObjectiveSchema,
+  originLocation: normalizedLocationSchema.optional(),
+  displayTimezone: z.string().trim().min(1).optional(),
+  answerTone: answerToneSchema.default('casual'),
+  timeDisplay: timeDisplaySchema.default('user-local'),
+  discoveryScope: weatherComparisonDiscoveryScopeSchema.optional(),
+  candidates: z.array(weatherComparisonCandidateAnalysisSchema).min(1).max(12),
+})
+
+export const weatherComparisonBundleSchema = z.object({
+  answerMode: answerModeSchema,
+  rankingObjective: rankingObjectiveSchema,
+  rankLimit: z.number().int().min(1).max(12),
+  bottomLine: z.string(),
+  confidence: weatherConfidenceSchema,
+  whyRainCheckThinksThat: z.string(),
+  sharedUncertainty: z.string().optional(),
+  winner: weatherComparedCandidateSchema.optional(),
+  rankedCandidates: z.array(weatherComparedCandidateSchema).default([]),
+  recommendedCards: z.array(weatherProductCardSchema).default([]),
+  citations: z.array(citationSchema).default([]),
+  comparisonContext: weatherComparisonContextSchema.optional(),
+})
+
 export const resolvedWeatherRequestSchema = z.object({
   userQuestion: z.string().trim().min(1),
   workflow: z.string().trim().min(1),
@@ -292,9 +417,9 @@ export const evidenceProductSchema = z.object({
   units: z.string(),
   spatialResolution: z.string().optional(),
   summary: z.string(),
-  summaryStats: z.record(z.string(), z.union([z.number(), z.string()])).default(
-    {},
-  ),
+  summaryStats: z
+    .record(z.string(), z.union([z.number(), z.string()]))
+    .default({}),
   signalScore: z.number().min(0).max(1),
   confidence: z.number().min(0).max(1),
   provenance: z.array(evidenceProvenanceSchema).default([]),
@@ -314,18 +439,19 @@ export const derivationBundleSchema = z.object({
   sourcesMissing: z.array(z.string()).default([]),
 })
 
-export const deriveShortRangeRequestSchema = resolvedWeatherRequestSchema.extend({
-  domain: z.enum([
-    'severe',
-    'convection',
-    'storm-mode',
-    'snow',
-    'ice',
-    'low-clouds',
-    'fog',
-    'temperature-gradient',
-  ]),
-})
+export const deriveShortRangeRequestSchema =
+  resolvedWeatherRequestSchema.extend({
+    domain: z.enum([
+      'severe',
+      'convection',
+      'storm-mode',
+      'snow',
+      'ice',
+      'low-clouds',
+      'fog',
+      'temperature-gradient',
+    ]),
+  })
 
 export const deriveGlobalRequestSchema = resolvedWeatherRequestSchema.extend({
   domain: z.enum([
@@ -349,26 +475,30 @@ export const deriveRadarNowcastRequestSchema =
     ]),
   })
 
-export const deriveSatelliteRequestSchema = resolvedWeatherRequestSchema.extend({
-  domain: z.enum([
-    'cloud-top',
-    'convective-initiation',
-    'moisture-plume',
-    'low-clouds',
-    'fog',
-    'lightning',
-  ]),
-})
+export const deriveSatelliteRequestSchema = resolvedWeatherRequestSchema.extend(
+  {
+    domain: z.enum([
+      'cloud-top',
+      'convective-initiation',
+      'moisture-plume',
+      'low-clouds',
+      'fog',
+      'lightning',
+    ]),
+  },
+)
 
-export const deriveHydrologyRequestSchema = resolvedWeatherRequestSchema.extend({
-  domain: z.enum([
-    'river-flood',
-    'flash-flood',
-    'peak-flow',
-    'hydro-timing',
-    'winter-hydrology',
-  ]),
-})
+export const deriveHydrologyRequestSchema = resolvedWeatherRequestSchema.extend(
+  {
+    domain: z.enum([
+      'river-flood',
+      'flash-flood',
+      'peak-flow',
+      'hydro-timing',
+      'winter-hydrology',
+    ]),
+  },
+)
 
 export const synthesisBundleSchema = z.object({
   bottomLine: z.string(),
@@ -405,6 +535,12 @@ export const synthesizeWeatherRequestSchema = z.object({
   region: weatherRegionSchema,
   timeWindow: weatherTimeWindowSchema,
   chaseGuidanceLevel: chaseGuidanceLevelSchema.default('analysis-only'),
+  originLocation: normalizedLocationSchema.optional(),
+  displayTimezone: z.string().trim().min(1).optional(),
+  answerTone: answerToneSchema.default('casual'),
+  timeDisplay: timeDisplaySchema.default('user-local'),
+  selectedTarget: chaseTargetSchema.optional(),
+  nightfall: nightfallCutoffSchema.optional(),
   evidenceProducts: z.array(evidenceProductSchema).default([]),
   supportingBundles: z.array(derivationBundleSchema).default([]),
 })

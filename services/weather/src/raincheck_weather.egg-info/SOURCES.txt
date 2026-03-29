@@ -4,6 +4,7 @@ src/raincheck_weather/__init__.py
 src/raincheck_weather/app.py
 src/raincheck_weather/artifacts.py
 src/raincheck_weather/catalog.py
+src/raincheck_weather/comparison.py
 src/raincheck_weather/derivations.py
 src/raincheck_weather/errors.py
 src/raincheck_weather/models.py

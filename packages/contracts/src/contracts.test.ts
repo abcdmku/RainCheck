@@ -1,25 +1,29 @@
 import { describe, expect, it } from 'vitest'
-
+import { runtimeInfoResponseSchema } from './api'
+import { weatherSourceCatalog } from './catalog'
 import { citationSchema, requestClassificationSchema } from './chat'
+import { appSettingsSchema } from './settings'
 import {
+  compareWeatherCandidatesToolDef,
   deriveGlobalWeatherToolDef,
   deriveHydrologyWeatherToolDef,
   deriveRadarNowcastToolDef,
   deriveSatelliteWeatherToolDef,
   deriveShortRangeWeatherToolDef,
+  generateWeatherArtifactToolDef,
   getAviationContextToolDef,
   getForecastToolDef,
   getSevereContextToolDef,
-  generateWeatherArtifactToolDef,
   synthesizeWeatherConclusionToolDef,
   weatherArtifactTypeSchema,
 } from './tools'
 import {
   derivationBundleSchema,
   synthesizeWeatherRequestSchema,
+  weatherComparisonBundleSchema,
+  weatherComparisonRequestSchema,
   weatherToolEnvelopeSchema,
 } from './weather'
-import { weatherSourceCatalog } from './catalog'
 
 describe('weather contracts', () => {
   it('accepts displayUrl on citations and provenance payloads', () => {
@@ -75,9 +79,17 @@ describe('weather contracts', () => {
         locationRequired: true,
         needsArtifact: false,
         chaseGuidanceLevel: 'general-target',
+        answerMode: 'compare',
+        candidateMode: 'named',
+        rankLimit: 2,
+        rankingObjective: 'severe-favorability',
       }),
     ).toMatchObject({
       chaseGuidanceLevel: 'general-target',
+      answerMode: 'compare',
+      candidateMode: 'named',
+      rankLimit: 2,
+      rankingObjective: 'severe-favorability',
     })
   })
 
@@ -90,14 +102,13 @@ describe('weather contracts', () => {
     )
     expect(deriveGlobalWeatherToolDef.name).toBe('derive_global_weather')
     expect(deriveRadarNowcastToolDef.name).toBe('derive_radar_nowcast')
-    expect(deriveSatelliteWeatherToolDef.name).toBe(
-      'derive_satellite_weather',
-    )
-    expect(deriveHydrologyWeatherToolDef.name).toBe(
-      'derive_hydrology_weather',
-    )
+    expect(deriveSatelliteWeatherToolDef.name).toBe('derive_satellite_weather')
+    expect(deriveHydrologyWeatherToolDef.name).toBe('derive_hydrology_weather')
     expect(synthesizeWeatherConclusionToolDef.name).toBe(
       'synthesize_weather_conclusion',
+    )
+    expect(compareWeatherCandidatesToolDef.name).toBe(
+      'compare_weather_candidates',
     )
     expect(generateWeatherArtifactToolDef.name).toBe(
       'generate_weather_artifact',
@@ -110,7 +121,7 @@ describe('weather contracts', () => {
   })
 
   it('defaults national-capable tools to a United States location query', () => {
-    expect(getSevereContextToolDef.inputSchema!.parse({})).toMatchObject({
+    expect(getSevereContextToolDef.inputSchema?.parse({})).toMatchObject({
       locationQuery: 'United States',
     })
   })
@@ -205,6 +216,44 @@ describe('weather contracts', () => {
           end: '2026-03-25T00:00:00Z',
         },
         chaseGuidanceLevel: 'exact-target',
+        originLocation: {
+          query: 'Chicago, IL',
+          name: 'Chicago, Illinois, United States',
+          latitude: 41.8781,
+          longitude: -87.6298,
+          region: 'Illinois',
+          country: 'United States',
+          timezone: 'America/Chicago',
+          resolvedBy: 'open-meteo-geocoding',
+        },
+        displayTimezone: 'America/Chicago',
+        answerTone: 'professional',
+        timeDisplay: 'user-local',
+        selectedTarget: {
+          query: 'Springfield, Illinois',
+          label: 'Springfield to Bloomington-Normal in central Illinois',
+          location: {
+            query: 'Springfield, Illinois',
+            name: 'Springfield, Illinois, United States',
+            latitude: 39.7817,
+            longitude: -89.6501,
+            region: 'Illinois',
+            country: 'United States',
+            timezone: 'America/Chicago',
+            resolvedBy: 'raincheck-regional-anchor',
+          },
+          regionLabel: 'central Illinois',
+          startLabel: 'Springfield',
+          stopLabel: 'Bloomington-Normal',
+          travelHours: 3,
+          corridorHours: 1,
+          withinNearbyRadius: true,
+          supportScore: 0.78,
+        },
+        nightfall: {
+          event: 'civil-dusk',
+          occursAt: '2026-03-25T00:18:00Z',
+        },
         evidenceProducts: [
           {
             id: 'href-stp',
@@ -221,7 +270,8 @@ describe('weather contracts', () => {
             fieldName: 'effective_stp',
             fieldType: 'derived_diagnostic',
             units: 'index',
-            summary: 'Ensemble tornado-supportive corridor remains focused along the dryline.',
+            summary:
+              'Ensemble tornado-supportive corridor remains focused along the dryline.',
             signalScore: 0.76,
             confidence: 0.7,
             provenance: [
@@ -229,19 +279,57 @@ describe('weather contracts', () => {
                 sourceId: 'href',
                 productId: 'stp',
                 label: 'HREF STP field',
-              kind: 'dataset',
-              url: 'https://nomads.ncep.noaa.gov/pub/data/nccf/com/href/prod/href.20260324/ensprod/href.t18z.conus.avrg.f05.grib2',
-              contextUrl: 'https://mag.ncep.noaa.gov/data/href/18/example.gif',
-              displayUrl: 'https://mag.ncep.noaa.gov/data/href/18/example.gif',
-              retrievedAt: '2026-03-24T18:05:00Z',
-            },
-          ],
+                kind: 'dataset',
+                url: 'https://nomads.ncep.noaa.gov/pub/data/nccf/com/href/prod/href.20260324/ensprod/href.t18z.conus.avrg.f05.grib2',
+                contextUrl:
+                  'https://mag.ncep.noaa.gov/data/href/18/example.gif',
+                displayUrl:
+                  'https://mag.ncep.noaa.gov/data/href/18/example.gif',
+                retrievedAt: '2026-03-24T18:05:00Z',
+              },
+            ],
             artifactHandles: [],
           },
         ],
         supportingBundles: [],
       }).success,
     ).toBe(true)
+  })
+
+  it('defaults app settings time display to user local', () => {
+    expect(
+      appSettingsSchema.parse({
+        theme: 'dark',
+        units: 'imperial',
+        defaultLocationLabel: null,
+        allowDeviceLocation: false,
+        providerPreferences: [],
+        shareByDefault: false,
+      }),
+    ).toMatchObject({
+      answerTone: 'casual',
+      timeDisplay: 'user-local',
+    })
+  })
+
+  it('accepts runtime diagnostics payloads', () => {
+    expect(
+      runtimeInfoResponseSchema.parse({
+        runtime: {
+          runtimeId: 'api-4242-abcd1234',
+          startedAt: '2026-03-26T21:00:00.000Z',
+          processId: 4242,
+          environment: 'development',
+          apiBaseUrl: 'http://localhost:3001',
+          weatherServiceUrl: 'http://127.0.0.1:8000',
+        },
+      }),
+    ).toMatchObject({
+      runtime: {
+        runtimeId: 'api-4242-abcd1234',
+        environment: 'development',
+      },
+    })
   })
 
   it('accepts derivation bundles with evidence products', () => {
@@ -264,12 +352,94 @@ describe('weather contracts', () => {
           end: '2026-03-25T00:00:00Z',
         },
         evidenceProducts: [],
-        agreementSummary: 'Short-range guidance favors a discrete initiation corridor before upscale growth.',
+        agreementSummary:
+          'Short-range guidance favors a discrete initiation corridor before upscale growth.',
         keyConflicts: [],
         recommendedCards: [],
         recommendedArtifacts: [],
         sourcesUsed: ['href', 'hrrr'],
         sourcesMissing: [],
+      }).success,
+    ).toBe(true)
+  })
+
+  it('accepts comparison requests and comparison bundles', () => {
+    expect(
+      weatherComparisonRequestSchema.safeParse({
+        userQuestion:
+          'Compare Bloomington, IL and Paxton, IL for tornado favorability.',
+        workflow: 'severe-weather',
+        answerMode: 'compare',
+        candidateMode: 'named',
+        rankLimit: 2,
+        rankingObjective: 'severe-favorability',
+        answerTone: 'professional',
+        candidates: [
+          {
+            candidate: {
+              query: 'Bloomington, IL',
+              label: 'Bloomington, IL',
+              location: {
+                query: 'Bloomington, IL',
+                name: 'Bloomington, Illinois, United States',
+                latitude: 40.4842,
+                longitude: -88.9937,
+                resolvedBy: 'pytest',
+              },
+              source: 'user',
+            },
+            severeContext: {
+              sourceId: 'spc',
+              sourceName: 'Storm Prediction Center',
+              retrievedAt: '2026-03-24T15:00:00Z',
+              validAt: '2026-03-24T15:00:00Z',
+              location: {
+                query: 'Bloomington, IL',
+                name: 'Bloomington, Illinois, United States',
+                latitude: 40.4842,
+                longitude: -88.9937,
+                resolvedBy: 'pytest',
+              },
+              units: {},
+              confidence: 0.8,
+              summary: 'SPC severe context for Bloomington.',
+              normalizedForecast: {
+                domain: 'severe-context',
+                headline: 'Bloomington severe context.',
+                alternateScenarios: [],
+                keySignals: [],
+                conflicts: [],
+                failureModes: [],
+                whatWouldChange: [],
+                productCards: [],
+                recommendedProductIds: [],
+              },
+              data: {},
+              citations: [],
+            },
+            supportingBundles: [],
+          },
+        ],
+      }).success,
+    ).toBe(true)
+
+    expect(
+      weatherComparisonBundleSchema.safeParse({
+        answerMode: 'compare',
+        rankingObjective: 'severe-favorability',
+        rankLimit: 2,
+        bottomLine:
+          'Paxton looks more favorable than Bloomington for severe favorability right now.',
+        confidence: {
+          level: 'medium',
+          reason: 'The leading candidate separates modestly from the rest.',
+        },
+        whyRainCheckThinksThat:
+          'RainCheck weighted storm-scale radar support, short-range severe signal, official severe context, and conflict penalties across each candidate.',
+        sharedUncertainty: 'Boundary placement can still shift the corridor.',
+        rankedCandidates: [],
+        recommendedCards: [],
+        citations: [],
       }).success,
     ).toBe(true)
   })

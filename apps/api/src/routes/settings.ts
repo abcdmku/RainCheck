@@ -1,40 +1,17 @@
 import {
-  clearProviderKeySchema,
-  storeProviderKeySchema,
+  clearProviderConnectionSchema,
+  updateProviderConnectionSchema,
 } from '@raincheck/contracts'
 import type { FastifyInstance } from 'fastify'
 
 import {
-  clearProviderKey,
-  getByokState,
-  getProviderKeyMap,
+  clearProviderConnection,
+  getAvailableProviders,
+  getProviderConnectionStates,
   getSettings,
-  storeProviderKey,
+  updateProviderConnection,
   updateSettings,
 } from '../services/settings-service'
-
-const providerIds = ['openai', 'anthropic', 'gemini', 'openrouter'] as const
-
-async function getAvailableProviders(app: FastifyInstance) {
-  const keyMap = await getProviderKeyMap(app)
-
-  return providerIds.filter((providerId) => {
-    switch (providerId) {
-      case 'openai':
-        return Boolean(app.raincheckEnv.OPENAI_API_KEY || keyMap.openai?.apiKey)
-      case 'anthropic':
-        return Boolean(
-          app.raincheckEnv.ANTHROPIC_API_KEY || keyMap.anthropic?.apiKey,
-        )
-      case 'gemini':
-        return Boolean(app.raincheckEnv.GEMINI_API_KEY || keyMap.gemini?.apiKey)
-      case 'openrouter':
-        return Boolean(
-          app.raincheckEnv.OPENROUTER_API_KEY || keyMap.openrouter?.apiKey,
-        )
-    }
-  })
-}
 
 async function buildSettingsPayload(
   app: FastifyInstance,
@@ -44,7 +21,7 @@ async function buildSettingsPayload(
 
   return {
     ...settings,
-    byok: await getByokState(app),
+    providerConnections: await getProviderConnectionStates(app),
     availableProviders: await getAvailableProviders(app),
   }
 }
@@ -59,18 +36,25 @@ export async function registerSettingsRoutes(app: FastifyInstance) {
     return { settings: await buildSettingsPayload(app, settings) }
   })
 
-  app.post('/api/settings/byok', async (request) => {
-    const parsed = storeProviderKeySchema.parse(request.body)
-    await storeProviderKey(app, parsed)
+  app.put('/api/settings/providers/:providerId/connection', async (request) => {
+    const params = request.params as { providerId: string }
+    const parsed = updateProviderConnectionSchema.parse({
+      ...(request.body as Record<string, unknown>),
+      providerId: params.providerId,
+    })
+    await updateProviderConnection(app, parsed)
     return { ok: true }
   })
 
-  app.delete('/api/settings/byok/:providerId', async (request) => {
-    const params = request.params as { providerId: string }
-    await clearProviderKey(
-      app,
-      clearProviderKeySchema.parse({ providerId: params.providerId }),
-    )
-    return { ok: true }
-  })
+  app.delete(
+    '/api/settings/providers/:providerId/connection',
+    async (request) => {
+      const params = request.params as { providerId: string }
+      await clearProviderConnection(
+        app,
+        clearProviderConnectionSchema.parse({ providerId: params.providerId }),
+      )
+      return { ok: true }
+    },
+  )
 }

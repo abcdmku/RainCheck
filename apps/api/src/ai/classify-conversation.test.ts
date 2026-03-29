@@ -57,4 +57,30 @@ describe('classifyConversationRequest', () => {
     })
     expect(classification.timeHorizonHours).toBe(48)
   })
+
+  it('treats short location-only forecast follow-ups as forecast refinements instead of switching workflows', () => {
+    const classification = classifyConversationRequest([
+      {
+        role: 'user',
+        content: 'what is the weather this weekend?',
+      },
+      {
+        role: 'assistant',
+        content: 'The weekend forecast still depends on where you mean.',
+      },
+      {
+        role: 'user',
+        content: 'near chicago',
+      },
+    ])
+
+    expect(classification).toMatchObject({
+      taskClass: 'chat',
+      intent: 'forecast',
+      answerMode: 'single',
+      candidateMode: 'named',
+      locationRequired: true,
+    })
+    expect(classification.intent).not.toBe('severe-weather')
+  })
 })

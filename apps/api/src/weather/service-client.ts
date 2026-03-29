@@ -1,4 +1,6 @@
 import {
+  weatherComparisonBundleSchema,
+  weatherComparisonRequestSchema,
   derivationBundleSchema,
   deriveGlobalRequestSchema,
   deriveHydrologyRequestSchema,
@@ -240,6 +242,18 @@ export async function synthesizeWeatherConclusion(
     '/synthesize',
     request,
     synthesisBundleSchema,
+  )
+}
+
+export async function compareWeatherCandidates(
+  app: FastifyInstance,
+  request: z.input<typeof weatherComparisonRequestSchema>,
+) {
+  return postWeatherServiceJson(
+    app,
+    '/compare',
+    request,
+    weatherComparisonBundleSchema,
   )
 }
 

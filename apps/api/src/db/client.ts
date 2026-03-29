@@ -52,6 +52,8 @@ export function createDb(dbUrl: string) {
       artifacts_json TEXT NOT NULL,
       provider TEXT,
       model TEXT,
+      transport TEXT,
+      source TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -66,7 +68,8 @@ export function createDb(dbUrl: string) {
       id TEXT PRIMARY KEY,
       provider_id TEXT NOT NULL,
       encrypted_value TEXT NOT NULL,
-      use_byok INTEGER NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'api-key',
+      model TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -77,6 +80,32 @@ export function createDb(dbUrl: string) {
     sqlite.exec(
       `ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
     )
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    sqlite.exec(
+      `ALTER TABLE provider_credentials ADD COLUMN mode TEXT NOT NULL DEFAULT 'api-key'`,
+    )
+  } catch {
+    // Column already exists â€” ignore
+  }
+
+  try {
+    sqlite.exec(`ALTER TABLE provider_credentials ADD COLUMN model TEXT`)
+  } catch {
+    // Column already exists â€” ignore
+  }
+
+  try {
+    sqlite.exec(`ALTER TABLE messages ADD COLUMN transport TEXT`)
+  } catch {
+    // Column already exists — ignore
+  }
+
+  try {
+    sqlite.exec(`ALTER TABLE messages ADD COLUMN source TEXT`)
   } catch {
     // Column already exists — ignore
   }

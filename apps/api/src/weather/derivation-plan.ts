@@ -18,10 +18,13 @@ export type NormalizedWeatherLocation = {
   longitude: number
   region?: string
   country?: string
+  timezone?: string
   resolvedBy: string
 }
 
-type PlannedArtifactType = z.infer<typeof weatherRequestedArtifactSchema>['type']
+type PlannedArtifactType = z.infer<
+  typeof weatherRequestedArtifactSchema
+>['type']
 
 function lowerQuestion(value: string) {
   return value.toLowerCase()
@@ -150,7 +153,11 @@ function questionHints(question: string) {
     }
   }
 
-  if (text.includes('river') || text.includes('flood') || text.includes('gauge')) {
+  if (
+    text.includes('river') ||
+    text.includes('flood') ||
+    text.includes('gauge')
+  ) {
     return {
       domain: 'flash-flood',
       variables: ['qpf', 'qpe', 'stage', 'flow'],
@@ -176,7 +183,13 @@ export function planWeatherDerivations(classification: RequestClassification) {
 
   switch (classification.intent) {
     case 'severe-weather':
-      plan.push('short-range', 'radar-nowcast')
+      if (classification.timeHorizonHours >= 72) {
+        plan.push('global')
+      } else if (classification.timeHorizonHours >= 48) {
+        plan.push('global', 'short-range')
+      } else {
+        plan.push('short-range', 'radar-nowcast')
+      }
       break
     case 'precipitation':
     case 'hydrology':

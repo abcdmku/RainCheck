@@ -1,9 +1,12 @@
 import {
+  type AnswerTone,
   type Citation,
   type ChaseGuidanceLevel,
+  type TimeDisplay,
   type WeatherWorkflow,
   weatherConclusionSchema,
 } from '@raincheck/contracts'
+import { applyAnswerToneToText } from '../ai/answer-tone'
 
 import type {
   WeatherArtifactHandle,
@@ -18,6 +21,28 @@ type SynthesisInput = {
   chaseGuidanceLevel?: ChaseGuidanceLevel
   locationQuery?: string
   timeHorizonHours?: number
+  displayTimezone?: string
+  answerTone?: AnswerTone
+  timeDisplay?: TimeDisplay
+  originLocation?: {
+    name: string
+    timezone?: string
+  }
+  selectedTarget?: {
+    label: string
+    location: {
+      timezone?: string
+    }
+    startLabel?: string
+    stopLabel?: string
+    travelHours?: number
+    corridorHours?: number
+    withinNearbyRadius?: boolean
+  }
+  nightfall?: {
+    event: 'civil-dusk' | 'sunset'
+    occursAt: string
+  }
   currentConditions?: WeatherEnvelope<any>
   forecast?: WeatherEnvelope<any>
   alerts?: WeatherEnvelope<any>
@@ -71,6 +96,94 @@ function compactText(value: string, maxChars = 180) {
   }
 
   return `${normalized.slice(0, maxChars - 3).trimEnd()}...`
+}
+
+function compactLocationLabel(value: string) {
+  return value.split(',')[0]?.trim() || value
+}
+
+function formatClock(value: string, timeZone?: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric',
+      minute:
+        date.getUTCMinutes() || date.getMinutes() ? '2-digit' : undefined,
+      hour12: true,
+      ...(timeZone ? { timeZone } : {}),
+    })
+
+    return formatter.format(date)
+  } catch {
+    return new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric',
+      minute:
+        date.getUTCMinutes() || date.getMinutes() ? '2-digit' : undefined,
+      hour12: true,
+    }).format(date)
+  }
+}
+
+function hoursLabel(value: number) {
+  const rounded = Math.round(value * 10) / 10
+  if (Math.abs(rounded - 1) < 0.05) {
+    return 'about 1 hour'
+  }
+  if (Number.isInteger(rounded)) {
+    return `about ${rounded} hours`
+  }
+  return `about ${rounded.toFixed(1)} hours`
+}
+
+function targetTimeZone(input: SynthesisInput) {
+  return (
+    input.selectedTarget?.location.timezone ??
+    synthesisLocation(input)?.timezone
+  )
+}
+
+function displayTimeLabel(input: SynthesisInput, value: string) {
+  const userTimeZone =
+    input.displayTimezone ?? input.originLocation?.timezone ?? targetTimeZone(input)
+  const targetZone = targetTimeZone(input)
+  const timeDisplay = input.timeDisplay ?? 'user-local'
+
+  if (timeDisplay === 'target-local' && targetZone) {
+    return `${formatClock(value, targetZone)} target local time`
+  }
+
+  if (
+    timeDisplay === 'dual' &&
+    userTimeZone &&
+    targetZone &&
+    userTimeZone !== targetZone
+  ) {
+    return `${formatClock(value, userTimeZone)} local time (${formatClock(value, targetZone)} target time)`
+  }
+
+  if (userTimeZone) {
+    return `${formatClock(value, userTimeZone)} local time`
+  }
+
+  if (targetZone) {
+    return `${formatClock(value, targetZone)} target local time`
+  }
+
+  return formatClock(value)
+}
+
+function nightfallLabel(input: SynthesisInput) {
+  if (!input.nightfall) {
+    return null
+  }
+
+  const eventLabel =
+    input.nightfall.event === 'civil-dusk' ? 'civil dusk' : 'sunset'
+  return `${eventLabel} around ${displayTimeLabel(input, input.nightfall.occursAt)}`
 }
 
 function isChaseQuestion(question: string) {
@@ -158,8 +271,12 @@ function isBroadRegionLocation(
   input: SynthesisInput,
   locationLabel: string,
 ) {
+  if (input.selectedTarget) {
+    return false
+  }
+
   const location = synthesisLocation(input)
-  const shortLocation = locationLabel.split(',')[0]?.trim().toLowerCase()
+  const shortLocation = compactLocationLabel(locationLabel).toLowerCase()
   if (!location || !shortLocation) {
     return false
   }
@@ -171,7 +288,11 @@ function isBroadRegionLocation(
 }
 
 function targetLabel(input: SynthesisInput, locationLabel: string, level: ChaseGuidanceLevel) {
-  const shortLocation = locationLabel.split(',')[0]?.trim() || locationLabel
+  if (input.selectedTarget?.label) {
+    return input.selectedTarget.label
+  }
+
+  const shortLocation = compactLocationLabel(locationLabel)
   const directionalMatch = input.userQuestion.match(
     /\b((?:north|south|east|west|northeast|northwest|southeast|southwest)(?:\s*(?:to|and)\s*(?:north|south|east|west|northeast|northwest|southeast|southwest))?\s+of\s+[a-z0-9 .,'-]+)\b/i,
   )
@@ -255,7 +376,10 @@ function buildSevereBottomLine(input: SynthesisInput, locationLabel: string) {
     product?.summary ?? input.severeContext?.summary ?? '',
   )
   const timing = extractTimingPhrase(severeSummary)
-  const shortLocation = locationLabel.split(',')[0]?.trim() || locationLabel
+  const shortLocation = compactLocationLabel(locationLabel)
+  const originShortLocation = input.originLocation?.name
+    ? compactLocationLabel(input.originLocation.name)
+    : shortLocation
   const requestedGuidanceLevel = inferChaseGuidanceLevel(input)
   const confidenceScore = adjustedConfidenceScore(
     'severe-weather',
@@ -268,6 +392,47 @@ function buildSevereBottomLine(input: SynthesisInput, locationLabel: string) {
   )
   const target = targetLabel(input, locationLabel, guidanceLevel)
   const broadRegion = isBroadRegionLocation(input, locationLabel)
+  const hasSelectedTarget = Boolean(input.selectedTarget)
+
+  if (hasSelectedTarget) {
+    const timingClause = timing ? ` during ${timing.toLowerCase()}` : ''
+
+    if (
+      guidanceLevel === 'general-target' &&
+      input.selectedTarget?.withinNearbyRadius === false
+    ) {
+      return compactText(
+        `Nothing within about 3 hours of ${originShortLocation} is as well supported right now. The nearest better-supported start is ${target}${timingClause}.`,
+        220,
+      )
+    }
+
+    if (guidanceLevel === 'general-target') {
+      return compactText(
+        `From ${originShortLocation}, the best-supported start is ${target}${timingClause}.`,
+        220,
+      )
+    }
+
+    if (guidanceLevel === 'exact-target') {
+      return compactText(
+        `From ${originShortLocation}, the best-supported target right now is ${target}${timingClause}.`,
+        220,
+      )
+    }
+
+    if (guidanceLevel === 'full-route') {
+      return compactText(
+        `From ${originShortLocation}, stage toward ${target}${timingClause} and keep your route parallel to the favored storm track.`,
+        220,
+      )
+    }
+
+    return compactText(
+      `The best-supported severe setup from ${originShortLocation} favors ${target}${timingClause}.`,
+      220,
+    )
+  }
 
   if (guidanceLevel === 'full-route' && timing && broadRegion) {
     return compactText(
@@ -350,6 +515,34 @@ function buildSevereMostLikelyScenario(
   )
   const target = targetLabel(input, locationLabel, guidanceLevel)
   const broadRegion = isBroadRegionLocation(input, locationLabel)
+  const originShortLocation = input.originLocation?.name
+    ? compactLocationLabel(input.originLocation.name)
+    : compactLocationLabel(locationLabel)
+  const nightfall = nightfallLabel(input)
+
+  if (input.selectedTarget) {
+    const scenarioParts: Array<string> = []
+    if (typeof input.selectedTarget.travelHours === 'number') {
+      scenarioParts.push(
+        `It is ${hoursLabel(input.selectedTarget.travelHours)} from ${originShortLocation} to the start.`,
+      )
+    }
+    if (input.selectedTarget.stopLabel) {
+      const corridorHours =
+        typeof input.selectedTarget.corridorHours === 'number'
+          ? `, roughly ${hoursLabel(input.selectedTarget.corridorHours)} more down the corridor`
+          : ''
+      scenarioParts.push(
+        `Track no farther than ${input.selectedTarget.stopLabel}${corridorHours}${nightfall ? `, and be wrapping up by ${nightfall}.` : '.'}`,
+      )
+    } else if (nightfall) {
+      scenarioParts.push(`Plan to wrap up by ${nightfall}.`)
+    }
+
+    if (scenarioParts.length > 0) {
+      return compactText(scenarioParts.join(' '), 220)
+    }
+  }
 
   if (isMapVisualQuestion(input.userQuestion) && timing) {
     return compactText(
@@ -783,24 +976,41 @@ function buildBottomLine(
 }
 
 export function synthesizeWeatherConclusion(input: SynthesisInput) {
+  const answerTone = input.answerTone ?? 'casual'
   const entries = sortedEntries(input)
   const workflow = chooseWorkflow(input)
 
   if (entries.length === 0) {
     return weatherConclusionSchema.parse({
-      bottomLine:
+      bottomLine: applyAnswerToneToText(
         'RainCheck does not have enough weather context to make a supported call yet.',
+        answerTone,
+      ),
       confidence: {
         level: 'low',
-        reason:
+        reason: applyAnswerToneToText(
           'No normalized weather tool output was provided to the synthesis step.',
+          answerTone,
+        ),
       },
-      mostLikelyScenario:
+      mostLikelyScenario: applyAnswerToneToText(
         'The safest next step is to fetch the relevant weather context before making a forecast judgment.',
+        answerTone,
+      ),
       alternateScenarios: [],
       keySignals: [],
-      conflicts: ['No weather sources were supplied to the synthesis tool.'],
-      whatWouldChangeTheForecast: ['Add the relevant weather context first.'],
+      conflicts: [
+        applyAnswerToneToText(
+          'No weather sources were supplied to the synthesis tool.',
+          answerTone,
+        ),
+      ],
+      whatWouldChangeTheForecast: [
+        applyAnswerToneToText(
+          'Add the relevant weather context first.',
+          answerTone,
+        ),
+      ],
       recommendedArtifacts: [],
       productCards: [],
       citations: [],
@@ -875,16 +1085,27 @@ export function synthesizeWeatherConclusion(input: SynthesisInput) {
   )
 
   return weatherConclusionSchema.parse({
-    bottomLine,
+    bottomLine: applyAnswerToneToText(bottomLine, answerTone),
     confidence: {
       level,
-      reason: confidenceReason(workflow, entries, level),
+      reason: applyAnswerToneToText(
+        confidenceReason(workflow, entries, level),
+        answerTone,
+      ),
     },
-    mostLikelyScenario,
-    alternateScenarios: alternateScenarios.map(normalizeTimingLanguage),
-    keySignals,
-    conflicts: conflicts.map(normalizeTimingLanguage),
-    whatWouldChangeTheForecast,
+    mostLikelyScenario: applyAnswerToneToText(mostLikelyScenario, answerTone),
+    alternateScenarios: alternateScenarios.map((value) =>
+      applyAnswerToneToText(normalizeTimingLanguage(value), answerTone),
+    ),
+    keySignals: keySignals.map((value) =>
+      applyAnswerToneToText(value, answerTone),
+    ),
+    conflicts: conflicts.map((value) =>
+      applyAnswerToneToText(normalizeTimingLanguage(value), answerTone),
+    ),
+    whatWouldChangeTheForecast: whatWouldChangeTheForecast.map((value) =>
+      applyAnswerToneToText(value, answerTone),
+    ),
     recommendedArtifacts: dedupeStrings(
       cards
         .filter((card) => Boolean(card.href || card.artifactId))

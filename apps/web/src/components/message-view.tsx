@@ -679,8 +679,7 @@ function CollapsibleSources({
         onClick={() => setOpen((prev) => !prev)}
         type="button"
       >
-        <span className="sources-collapse-count">{visibleCitations.length}</span>
-        <span>sources</span>
+        <span>Sources</span>
         <ChevronDown className="sources-collapse-chevron" size={14} />
       </button>
       {open ? (

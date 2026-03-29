@@ -37,7 +37,8 @@ describe('chat streaming route', () => {
             provider: 'openai',
             model: 'gpt-4.1-mini',
             reason: 'test route',
-            usedByok: false,
+            transport: 'api',
+            source: 'shared-env',
             availableProviders: ['openai'],
           },
           classification: {
@@ -87,7 +88,14 @@ describe('chat streaming route', () => {
     })
 
     expect(response.ok).toBe(true)
+    expect(response.headers.get('x-raincheck-runtime-id')).toBeTruthy()
+    expect(response.headers.get('x-raincheck-weather-service-url')).toBe(
+      'http://localhost:8000',
+    )
+    expect(response.headers.get('x-raincheck-route')).toContain('gpt-4.1-mini')
     const text = await response.text()
+    expect(text).toContain('"type":"CUSTOM"')
+    expect(text).toContain('"name":"runtime-info"')
     expect(text).toContain('TEXT_MESSAGE_CONTENT')
     expect(text).toContain('Streaming test response')
     expect(text).toContain('[DONE]')
@@ -106,20 +114,38 @@ describe('chat streaming route', () => {
         messages: [
           { role: 'user', content: 'Best day to work outside this week?' },
         ],
+        displayTimezone: 'America/Chicago',
         locationOverride: {
           label: 'Austin, TX',
           latitude: 30.2672,
           longitude: -97.7431,
+          timezone: 'America/Chicago',
         },
       }),
     })
 
     expect(response.ok).toBe(true)
     expect(capturedBody).toMatchObject({
+      displayTimezone: 'America/Chicago',
       locationOverride: {
         label: 'Austin, TX',
         latitude: 30.2672,
         longitude: -97.7431,
+        timezone: 'America/Chicago',
+      },
+    })
+  })
+
+  it('returns runtime diagnostics from the dedicated endpoint', async () => {
+    const response = await fetch(`${serverUrl}/api/runtime`)
+
+    expect(response.ok).toBe(true)
+    await expect(response.json()).resolves.toMatchObject({
+      runtime: {
+        runtimeId: expect.stringContaining('api-'),
+        environment: 'test',
+        apiBaseUrl: 'http://localhost:3001',
+        weatherServiceUrl: 'http://localhost:8000',
       },
     })
   })

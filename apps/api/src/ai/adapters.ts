@@ -7,7 +7,7 @@ import { createOpenaiChat, type OpenAITextAdapter } from '@tanstack/ai-openai'
 
 import type { FastifyInstance } from 'fastify'
 
-import { getProviderKeyMap } from '../services/settings-service'
+import { getStoredApiKeyMap } from '../services/settings-service'
 
 type SupportedAdapter =
   | OpenAITextAdapter<any>
@@ -21,7 +21,7 @@ export async function buildAdapter(
     model: string
   },
 ): Promise<SupportedAdapter> {
-  const keyMap = await getProviderKeyMap(app)
+  const keyMap = await getStoredApiKeyMap(app)
 
   switch (decision.provider) {
     case 'anthropic':

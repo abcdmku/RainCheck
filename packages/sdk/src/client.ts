@@ -1,19 +1,15 @@
 import type {
-  AppSettings,
   Conversation,
   CreateConversationInput,
   MessageRecord,
-  ProviderId,
+  RuntimeInfo,
+  SettingsPayload,
   UpdateSettingsInput,
 } from '@raincheck/contracts'
 
 type ApiClientOptions = {
   baseUrl: string
   fetcher?: typeof fetch
-}
-
-type SettingsPayload = AppSettings & {
-  availableProviders?: Array<ProviderId>
 }
 
 function defaultFetcher(
@@ -110,6 +106,14 @@ export class RainCheckClient {
       settings: SettingsPayload
     }>(response)
     return data.settings
+  }
+
+  async getRuntimeInfo(): Promise<RuntimeInfo> {
+    const response = await this.fetcher(`${this.baseUrl}/api/runtime`)
+    const data = await readJson<{
+      runtime: RuntimeInfo
+    }>(response)
+    return data.runtime
   }
 
   async updateSettings(input: UpdateSettingsInput): Promise<SettingsPayload> {

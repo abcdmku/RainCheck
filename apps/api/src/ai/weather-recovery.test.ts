@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const {
+  buildComparisonLimitationContextMock,
   deriveRadarNowcastMock,
   deriveShortRangeWeatherMock,
   geocodeQueryMock,
+  runWeatherComparisonMock,
   synthesizeWeatherConclusionMock,
 } = vi.hoisted(() => ({
+  buildComparisonLimitationContextMock: vi.fn(),
   deriveRadarNowcastMock: vi.fn(),
   deriveShortRangeWeatherMock: vi.fn(),
   geocodeQueryMock: vi.fn(),
+  runWeatherComparisonMock: vi.fn(),
   synthesizeWeatherConclusionMock: vi.fn(),
 }))
 
@@ -26,13 +30,25 @@ vi.mock('../weather/service-client', () => ({
   synthesizeWeatherConclusion: synthesizeWeatherConclusionMock,
 }))
 
+vi.mock('../weather/comparison', () => ({
+  buildComparisonLimitationContext: buildComparisonLimitationContextMock,
+  isWeatherComparisonBundle: (value: any) =>
+    value != null &&
+    typeof value === 'object' &&
+    typeof value.bottomLine === 'string' &&
+    Array.isArray(value.rankedCandidates),
+  runWeatherComparison: runWeatherComparisonMock,
+}))
+
 import { recoverWeatherToolResults } from './weather-recovery'
 
 describe('recoverWeatherToolResults', () => {
   afterEach(() => {
+    buildComparisonLimitationContextMock.mockReset()
     deriveRadarNowcastMock.mockReset()
     deriveShortRangeWeatherMock.mockReset()
     geocodeQueryMock.mockReset()
+    runWeatherComparisonMock.mockReset()
     synthesizeWeatherConclusionMock.mockReset()
   })
 
@@ -93,6 +109,9 @@ describe('recoverWeatherToolResults', () => {
         locationRequired: true,
         needsArtifact: false,
         chaseGuidanceLevel: 'general-target',
+        answerMode: 'single',
+        candidateMode: 'named',
+        rankLimit: 1,
       },
       'im in yorkville il whats the best plan to follow these upcoming storms to chase a tornado',
       [
@@ -182,6 +201,9 @@ describe('recoverWeatherToolResults', () => {
         locationRequired: true,
         needsArtifact: false,
         chaseGuidanceLevel: 'general-target',
+        answerMode: 'single',
+        candidateMode: 'named',
+        rankLimit: 1,
       },
       'im in yorkville il whats the best plan to follow these upcoming storms to chase a tornado. what time and where should i start the chase',
       [],
@@ -193,5 +215,98 @@ describe('recoverWeatherToolResults', () => {
     expect(
       result.some((entry) => entry.toolName === 'synthesize_weather_conclusion'),
     ).toBe(true)
+  })
+
+  it('routes compare recovery through the comparison bundle path', async () => {
+    runWeatherComparisonMock.mockResolvedValue({
+      answerMode: 'compare',
+      rankingObjective: 'severe-favorability',
+      rankLimit: 2,
+      bottomLine:
+        'Paxton looks more favorable than Bloomington for severe favorability right now.',
+      confidence: {
+        level: 'medium',
+        reason: 'The leading candidate separates modestly from the rest.',
+      },
+      whyRainCheckThinksThat:
+        'RainCheck weighted storm-scale radar support, short-range severe signal, official severe context, and conflict penalties across each candidate.',
+      rankedCandidates: [],
+      recommendedCards: [],
+      citations: [],
+    })
+
+    const result = await recoverWeatherToolResults(
+      {} as any,
+      {
+        taskClass: 'research',
+        intent: 'severe-weather',
+        timeHorizonHours: 6,
+        locationRequired: true,
+        needsArtifact: false,
+        chaseGuidanceLevel: 'analysis-only',
+        answerMode: 'compare',
+        candidateMode: 'named',
+        rankLimit: 2,
+        rankingObjective: 'severe-favorability',
+      },
+      'compare bloomington il and paxton il. which one looks more favorable to spawn a tornado?',
+      [],
+    )
+
+    expect(runWeatherComparisonMock).toHaveBeenCalledTimes(1)
+    expect(result).toEqual([
+      expect.objectContaining({
+        toolName: 'compare_weather_candidates',
+        result: expect.objectContaining({
+          bottomLine:
+            'Paxton looks more favorable than Bloomington for severe favorability right now.',
+        }),
+      }),
+    ])
+  })
+
+  it('keeps comparison context on limitation bundles so location-only follow-ups can recover', async () => {
+    runWeatherComparisonMock.mockResolvedValue(null)
+    buildComparisonLimitationContextMock.mockResolvedValue({
+      workflow: 'forecast',
+      answerMode: 'rank',
+      candidateMode: 'discovered',
+      rankLimit: 5,
+      rankingObjective: 'beach-day',
+      candidates: [],
+    })
+
+    const result = await recoverWeatherToolResults(
+      {} as any,
+      {
+        taskClass: 'chat',
+        intent: 'forecast',
+        timeHorizonHours: 48,
+        locationRequired: false,
+        needsArtifact: false,
+        chaseGuidanceLevel: 'analysis-only',
+        answerMode: 'rank',
+        candidateMode: 'discovered',
+        rankLimit: 5,
+        rankingObjective: 'beach-day',
+      },
+      'best area for beaches and when',
+      [],
+    )
+
+    expect(buildComparisonLimitationContextMock).toHaveBeenCalledTimes(1)
+    expect(result).toEqual([
+      expect.objectContaining({
+        toolName: 'compare_weather_candidates',
+        result: expect.objectContaining({
+          comparisonContext: expect.objectContaining({
+            workflow: 'forecast',
+            answerMode: 'rank',
+            candidateMode: 'discovered',
+            rankingObjective: 'beach-day',
+          }),
+        }),
+      }),
+    ])
   })
 })

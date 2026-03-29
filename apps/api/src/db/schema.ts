@@ -21,6 +21,8 @@ export const messagesTable = sqliteTable('messages', {
   artifactsJson: text('artifacts_json').notNull().default('[]'),
   provider: text('provider'),
   model: text('model'),
+  transport: text('transport'),
+  source: text('source'),
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 })
 
@@ -35,7 +37,8 @@ export const providerCredentialsTable = sqliteTable('provider_credentials', {
   id: text('id').primaryKey(),
   providerId: text('provider_id').notNull(),
   encryptedValue: text('encrypted_value').notNull(),
-  useByok: integer('use_byok', { mode: 'boolean' }).notNull().default(false),
+  mode: text('mode').notNull().default('api-key'),
+  model: text('model'),
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text('updated_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 })

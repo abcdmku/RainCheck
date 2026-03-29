@@ -2,6 +2,11 @@ import {
   type RequestClassification,
   requestClassificationSchema,
 } from '@raincheck/contracts'
+import {
+  candidateMentionedInQuestion,
+  extractLocationQueryFromQuestion,
+  extractStoredWeatherComparisonContext,
+} from '../weather/comparison'
 
 const chaseGuidanceRanks = {
   'analysis-only': 0,
@@ -21,6 +26,7 @@ function normalizeClassificationInput(message: string) {
     .replace(/\bstrorm\b/g, 'storm')
     .replace(/\bnextg\b/g, 'next')
     .replace(/\bsever\b/g, 'severe')
+    .replace(/\bweekl\b/g, 'week')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -286,6 +292,29 @@ const genericModelTerms = [
   'what do the models say',
 ]
 
+const beachTerms = ['beach', 'beaches', 'beach day', 'shore', 'coast']
+
+const discoveryRankingTerms = [
+  'locations',
+  'places',
+  'spots',
+  'beaches',
+  'corridors',
+  'targets',
+  'areas',
+]
+
+const compareRankingTerms = [
+  'which one',
+  'more favorable',
+  'looks better',
+  'better one',
+  'best one',
+  'did you check',
+  'what about',
+  'how about',
+]
+
 const broadStormLocatorTerms = [
   'where are the best storms',
   'where are the most severe storms',
@@ -303,9 +332,30 @@ const broadStormLocatorTerms = [
   'best place for storms',
 ]
 
+function isBroadStormSpotterPrompt(input: string) {
+  return (
+    /\bbest storms? to spot\b/.test(input) ||
+    (/\bbest storm\b/.test(input) &&
+      (input.includes('spot') || input.includes('currently') || hasTimeSignal(input)))
+  )
+}
+
+function isBroadStormInterestPrompt(input: string) {
+  return (
+    /\b(?:any|where|show|check)\s+(?:good|best)\s+storms?\b/.test(input) ||
+    (/\bgood\s+storms?\b/.test(input) &&
+      (hasTimeSignal(input) || input.includes('currently')))
+  )
+}
+
 const conversationFollowUpTerms = [
   'what about',
   'how about',
+  'what did you check',
+  'what did you look at',
+  'what did you use',
+  'what did you pull',
+  'what did you pull up',
   'show on a map',
   'show me on a map',
   'put that on a map',
@@ -369,6 +419,10 @@ function inferTimeHorizonHours(input: string) {
   const nextDayMatch = input.match(/\bnext\s+([1-9]|10)\s*[- ]?days?\b/)
   if (nextDayMatch?.[1]) {
     return Number(nextDayMatch[1]) * 24
+  }
+
+  if (/\bday\s*2\s*(?:and|&)\s*3\b/.test(input)) {
+    return 72
   }
 
   const dayWindowMatch = input.match(/\b([1-9]|10)\s*[- ]?days?\b/)
@@ -440,6 +494,10 @@ function buildClassification(
     timeHorizonHours?: number
     locationRequired?: boolean
     chaseGuidanceLevel?: RequestClassification['chaseGuidanceLevel']
+    answerMode?: RequestClassification['answerMode']
+    candidateMode?: RequestClassification['candidateMode']
+    rankLimit?: number
+    rankingObjective?: RequestClassification['rankingObjective']
   } = {},
 ): RequestClassification {
   const researchRequested = includesAny(input, researchTerms)
@@ -482,6 +540,11 @@ function buildClassification(
     (shouldInferChaseGuidanceLevel
       ? inferChaseGuidanceLevel(input)
       : 'analysis-only')
+  const answerMode = options.answerMode ?? inferAnswerMode(input)
+  const candidateMode = options.candidateMode ?? inferCandidateMode(input, answerMode)
+  const rankLimit = options.rankLimit ?? inferRankLimit(input, answerMode)
+  const rankingObjective =
+    options.rankingObjective ?? inferRankingObjective(input, intent, answerMode)
 
   return requestClassificationSchema.parse({
     taskClass,
@@ -490,7 +553,93 @@ function buildClassification(
     locationRequired: options.locationRequired ?? true,
     needsArtifact,
     chaseGuidanceLevel,
+    answerMode,
+    candidateMode,
+    rankLimit,
+    rankingObjective,
   })
+}
+
+function hasNamedCandidateSeparator(input: string) {
+  if (/\b(?:compare|versus|vs\.?|between|among)\b/.test(input)) {
+    return true
+  }
+
+  return (
+    (input.includes(' or ') || input.includes(' and ')) &&
+    includesAny(input, compareRankingTerms)
+  )
+}
+
+function isDiscoveryRankingPrompt(input: string) {
+  return (
+    (/\btop\s+\d+\b/.test(input) || /\bbest\b/.test(input)) &&
+    includesAny(input, discoveryRankingTerms) &&
+    !hasNamedCandidateSeparator(input)
+  )
+}
+
+function inferAnswerMode(input: string): RequestClassification['answerMode'] {
+  if (isDiscoveryRankingPrompt(input)) {
+    return 'rank'
+  }
+
+  if (hasNamedCandidateSeparator(input)) {
+    return includesAny(input, ['top ', 'rank ', 'best ']) ? 'rank' : 'compare'
+  }
+
+  return 'single'
+}
+
+function inferCandidateMode(
+  input: string,
+  answerMode: RequestClassification['answerMode'],
+): RequestClassification['candidateMode'] {
+  if (answerMode === 'single') {
+    return 'named'
+  }
+
+  return isDiscoveryRankingPrompt(input) ? 'discovered' : 'named'
+}
+
+function inferRankLimit(
+  input: string,
+  answerMode: RequestClassification['answerMode'],
+) {
+  const topMatch = input.match(/\btop\s+([1-9]|1[0-2])\b/)
+  if (topMatch?.[1]) {
+    return Number(topMatch[1])
+  }
+
+  if (answerMode === 'rank') {
+    return 5
+  }
+
+  if (answerMode === 'compare') {
+    return 2
+  }
+
+  return 1
+}
+
+function inferRankingObjective(
+  input: string,
+  intent: RequestClassification['intent'],
+  answerMode: RequestClassification['answerMode'],
+): RequestClassification['rankingObjective'] {
+  if (answerMode === 'single') {
+    return undefined
+  }
+
+  if (includesAny(input, beachTerms)) {
+    return 'beach-day'
+  }
+
+  if (intent === 'severe-weather') {
+    return 'severe-favorability'
+  }
+
+  return 'pleasant-weather'
 }
 
 function inferChaseGuidanceLevel(
@@ -573,6 +722,10 @@ function isComparisonPrompt(input: string) {
   return includesAny(input, ['compare', 'comparison', 'versus', 'vs'])
 }
 
+function isComparisonFollowUpMessage(input: string) {
+  return includesAny(input, compareRankingTerms)
+}
+
 function extractMessageText(message: any) {
   if (!message) {
     return ''
@@ -629,6 +782,25 @@ function isConversationFollowUp(input: string) {
   )
 }
 
+function isLocationOnlyWeatherRefinement(input: string) {
+  if (
+    !input ||
+    hasTimeSignal(input) ||
+    includesAny(input, coreWeatherTerms) ||
+    includesAny(input, researchTerms) ||
+    includesAny(input, artifactTerms) ||
+    isConversationFollowUp(input)
+  ) {
+    return false
+  }
+
+  if (input.split(/\s+/).filter(Boolean).length > 6) {
+    return false
+  }
+
+  return extractLocationQueryFromQuestion(input) != null
+}
+
 function previousExplicitUserClassification(
   messages: Array<any>,
   latestUserIndex: number,
@@ -678,6 +850,67 @@ function mergeConversationContext(
       previousClassification.chaseGuidanceLevel,
       latestClassification.chaseGuidanceLevel,
     ),
+    answerMode:
+      latestClassification.answerMode !== 'single'
+        ? latestClassification.answerMode
+        : previousClassification.answerMode,
+    candidateMode:
+      latestClassification.answerMode !== 'single'
+        ? latestClassification.candidateMode
+        : previousClassification.candidateMode,
+    rankLimit:
+      latestClassification.answerMode !== 'single'
+        ? latestClassification.rankLimit
+        : previousClassification.rankLimit,
+    rankingObjective:
+      latestClassification.rankingObjective ??
+      previousClassification.rankingObjective,
+  })
+}
+
+function mergeComparisonConversationContext(input: {
+  latestText: string
+  latestClassification: RequestClassification
+  previousClassification: RequestClassification | null
+  previousComparisonContext: NonNullable<
+    ReturnType<typeof extractStoredWeatherComparisonContext>
+  >
+}) {
+  const merged = input.previousClassification
+    ? mergeConversationContext(
+        input.latestText,
+        input.latestClassification,
+        input.previousClassification,
+      )
+    : input.latestClassification
+
+  return requestClassificationSchema.parse({
+    ...merged,
+    taskClass:
+      input.previousClassification?.taskClass === 'research' ||
+      merged.taskClass === 'research'
+        ? 'research'
+        : merged.taskClass,
+    intent: input.previousComparisonContext.workflow,
+    locationRequired:
+      input.previousComparisonContext.candidateMode === 'discovered'
+        ? false
+        : merged.locationRequired,
+    answerMode:
+      input.latestClassification.answerMode !== 'single'
+        ? input.latestClassification.answerMode
+        : input.previousComparisonContext.answerMode,
+    candidateMode:
+      input.latestClassification.answerMode !== 'single'
+        ? input.latestClassification.candidateMode
+        : input.previousComparisonContext.candidateMode,
+    rankLimit:
+      input.latestClassification.answerMode !== 'single'
+        ? input.latestClassification.rankLimit
+        : input.previousComparisonContext.rankLimit,
+    rankingObjective:
+      input.latestClassification.rankingObjective ??
+      input.previousComparisonContext.rankingObjective,
   })
 }
 
@@ -690,15 +923,35 @@ export function classifyConversationRequest(messages: Array<any>) {
   const latestText = extractMessageText(messages[latestUserIndex]).trim()
   const latestClassification = classifyRequest(latestText)
   const normalized = normalizeClassificationInput(latestText)
+  const locationOnlyRefinement = isLocationOnlyWeatherRefinement(normalized)
   const previousClassification = previousExplicitUserClassification(
     messages,
     latestUserIndex,
   )
+  const previousComparisonContext = extractStoredWeatherComparisonContext(messages)
+  const comparisonFollowUp =
+    previousComparisonContext != null &&
+    (latestClassification.answerMode !== 'single' ||
+      (locationOnlyRefinement &&
+        previousComparisonContext.candidateMode === 'discovered') ||
+      isComparisonFollowUpMessage(normalized) ||
+      previousComparisonContext.candidates.some((candidate) =>
+        candidateMentionedInQuestion(latestText, candidate),
+      ))
+
+  if (comparisonFollowUp && previousComparisonContext) {
+    return mergeComparisonConversationContext({
+      latestText: normalized,
+      latestClassification,
+      previousClassification,
+      previousComparisonContext,
+    })
+  }
 
   if (
     previousClassification &&
     latestClassification.intent === 'current-conditions' &&
-    isConversationFollowUp(normalized)
+    (isConversationFollowUp(normalized) || locationOnlyRefinement)
   ) {
     return mergeConversationContext(
       normalized,
@@ -731,8 +984,12 @@ export function classifyRequest(message: string): RequestClassification {
   const normalized = normalizeClassificationInput(message)
   const timeHorizonHours = inferTimeHorizonHours(normalized)
   const artifactRequested = includesAny(normalized, artifactTerms)
+  const discoveryRanking = isDiscoveryRankingPrompt(normalized)
+  const beachRanking = discoveryRanking && includesAny(normalized, beachTerms)
   const broadStormLocator =
     includesAny(normalized, broadStormLocatorTerms) ||
+    isBroadStormSpotterPrompt(normalized) ||
+    isBroadStormInterestPrompt(normalized) ||
     ((normalized.includes('where are') || normalized.includes('where will')) &&
       includesSevereSignal(normalized))
   const modelDrivenStormAnalysis =
@@ -744,6 +1001,10 @@ export function classifyRequest(message: string): RequestClassification {
       timeHorizonHours,
       locationRequired: false,
       needsArtifact: artifactRequested,
+      answerMode: 'single',
+      candidateMode: 'named',
+      rankLimit: 1,
+      rankingObjective: undefined,
     })
   }
 
@@ -813,6 +1074,10 @@ export function classifyRequest(message: string): RequestClassification {
         taskClass: 'research',
         timeHorizonHours,
         needsArtifact: artifactRequested,
+        answerMode: 'single',
+        candidateMode: 'named',
+        rankLimit: 1,
+        rankingObjective: undefined,
       })
     }
 
@@ -820,6 +1085,10 @@ export function classifyRequest(message: string): RequestClassification {
       taskClass: 'research',
       timeHorizonHours,
       needsArtifact: artifactRequested,
+      answerMode: 'single',
+      candidateMode: 'named',
+      rankLimit: 1,
+      rankingObjective: undefined,
     })
   }
 
@@ -829,6 +1098,10 @@ export function classifyRequest(message: string): RequestClassification {
         taskClass: 'research',
         timeHorizonHours,
         needsArtifact: artifactRequested,
+        answerMode: 'single',
+        candidateMode: 'named',
+        rankLimit: 1,
+        rankingObjective: undefined,
       })
     }
 
@@ -836,6 +1109,10 @@ export function classifyRequest(message: string): RequestClassification {
       taskClass: 'research',
       timeHorizonHours,
       needsArtifact: artifactRequested,
+      answerMode: 'single',
+      candidateMode: 'named',
+      rankLimit: 1,
+      rankingObjective: undefined,
     })
   }
 
@@ -909,6 +1186,30 @@ export function classifyRequest(message: string): RequestClassification {
     })
   }
 
+  if (
+    hasNamedCandidateSeparator(normalized) &&
+    includesAny(normalized, ['storm', 'storms', 'tornado', 'supercell'])
+  ) {
+    return buildClassification('severe-weather', normalized, {
+      taskClass: 'research',
+      timeHorizonHours,
+      locationRequired: true,
+      needsArtifact: artifactRequested,
+    })
+  }
+
+  if (beachRanking) {
+    return buildClassification('forecast', normalized, {
+      timeHorizonHours,
+      locationRequired: false,
+      needsArtifact: artifactRequested,
+      answerMode: 'rank',
+      candidateMode: 'discovered',
+      rankLimit: inferRankLimit(normalized, 'rank'),
+      rankingObjective: 'beach-day',
+    })
+  }
+
   if (includesAny(normalized, [...researchTerms, 'weather analysis'])) {
     return buildClassification('weather-analysis', normalized, {
       taskClass: 'research',
@@ -928,7 +1229,12 @@ export function classifyRequest(message: string): RequestClassification {
     ])
   ) {
     return buildClassification('forecast', normalized, {
+      locationRequired: discoveryRanking ? false : true,
       needsArtifact: artifactRequested,
+      answerMode: discoveryRanking ? 'rank' : undefined,
+      candidateMode: discoveryRanking ? 'discovered' : undefined,
+      rankLimit: discoveryRanking ? inferRankLimit(normalized, 'rank') : undefined,
+      rankingObjective: discoveryRanking ? 'pleasant-weather' : undefined,
     })
   }
 

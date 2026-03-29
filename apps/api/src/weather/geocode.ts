@@ -87,6 +87,7 @@ type OpenMeteoResponse = {
     admin1?: string
     country?: string
     country_code?: string
+    timezone?: string
   }>
 }
 
@@ -492,6 +493,7 @@ async function resolveWithOpenMeteo(app: FastifyInstance, query: string) {
       longitude: match.longitude,
       region: match.admin1,
       country: match.country,
+      timezone: match.timezone,
       resolvedBy: 'open-meteo-geocoding',
     })
   }

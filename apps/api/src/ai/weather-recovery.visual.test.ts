@@ -60,11 +60,17 @@ describe('weather recovery visual cleanup', () => {
     expect(text).not.toBeNull()
     const fallback = text ?? ''
 
-    expect(fallback).toContain('Confidence: medium.')
     expect(fallback).toContain(
-      'Main uncertainty: The warm front may still wobble south.',
+      'From Yorkville, the best-supported call is a 4 PM to 6 PM local time severe window.',
     )
+    expect(fallback).toContain(
+      'Separate storms remain the leading mode until 10 PM local time.',
+    )
+    expect(fallback).toContain('The warm front may still wobble south.')
+    expect(fallback).not.toContain('Confidence:')
+    expect(fallback).not.toContain('Why RainCheck thinks that:')
     expect(fallback).not.toContain('Agreement:')
+    expect(fallback).not.toContain('..')
   })
 
   it('drops repetitive chase guidance phrases from fallback text', () => {
@@ -98,11 +104,16 @@ describe('weather recovery visual cleanup', () => {
     expect(text).not.toBeNull()
     const fallback = text ?? ''
 
-    expect(fallback).toContain('Confidence: medium.')
     expect(fallback).toContain(
-      'Main uncertainty: Warm-front or outflow placement can still shift the highest tornado-supportive corridor.',
+      'It is still a conditional call because short-range and radar evidence line up on the broader corridor.',
     )
+    expect(fallback).toContain(
+      'Warm-front or outflow placement can still shift the highest tornado-supportive corridor.',
+    )
+    expect(fallback).not.toContain('Confidence:')
+    expect(fallback).not.toContain('Main uncertainty:')
     expect(fallback).not.toContain('Agreement:')
+    expect(fallback).not.toContain('..')
     expect(
       fallback.match(/south to southwest corridor from Yorkville/gi)?.length ?? 0,
     ).toBe(1)
@@ -110,6 +121,76 @@ describe('weather recovery visual cleanup', () => {
       fallback.match(/Warm-front or outflow placement can still shift/gi)
         ?.length ?? 0,
     ).toBe(1)
+  })
+
+  it('renders compare bundles as natural prose instead of stitched fragments', () => {
+    const text = buildWeatherFallbackText([
+      {
+        toolCallId: 'tool-compare',
+        toolName: 'compare_weather_candidates',
+        result: {
+          answerMode: 'compare',
+          rankingObjective: 'severe-favorability',
+          rankLimit: 2,
+          bottomLine:
+            'Paxton looks more favorable than Bloomington for severe favorability right now.',
+          confidence: {
+            level: 'medium',
+            reason: 'The lead is modest but supported.',
+          },
+          whyRainCheckThinksThat:
+            'RainCheck weighted storm-scale radar support, short-range severe signal, official severe context, and conflict penalties across each candidate.',
+          sharedUncertainty:
+            'Boundary placement can still shift the strongest tornado-supportive corridor.',
+          rankedCandidates: [
+            {
+              candidate: {
+                query: 'Paxton, IL',
+                label: 'Paxton, IL',
+                location: {
+                  query: 'Paxton, IL',
+                  name: 'Paxton, Illinois, United States',
+                  latitude: 40.46,
+                  longitude: -88.09,
+                  resolvedBy: 'pytest',
+                },
+                source: 'user',
+              },
+              rank: 1,
+              score: 0.7,
+              confidence: {
+                level: 'medium',
+                reason: 'Candidate evidence is reasonably complete.',
+              },
+              summary:
+                'Paxton, IL keeps the stronger tornado-supportive storm signal right now.',
+              why:
+                'Radar and MRMS support is currently sharper here than the nearby alternatives.',
+              supportingSignals: [],
+              conflicts: [],
+              recommendedCards: [],
+            },
+          ],
+          recommendedCards: [],
+          citations: [],
+        },
+      },
+    ])
+
+    expect(text).toContain(
+      'Paxton looks more favorable than Bloomington for severe favorability right now.',
+    )
+    expect(text).toContain(
+      'Radar and MRMS support is currently sharper here than the nearby alternatives.',
+    )
+    expect(text).toContain(
+      'Boundary placement can still shift the strongest tornado-supportive corridor.',
+    )
+    expect(text).not.toContain('Confidence:')
+    expect(text).not.toContain('Why RainCheck thinks that:')
+    expect(text).not.toContain('Main uncertainty:')
+    expect(text).not.toContain('RTMA keeps')
+    expect(text).not.toContain('..')
   })
 
   it('recovers a supported artifact for visual follow-up requests', async () => {
@@ -175,6 +256,9 @@ describe('weather recovery visual cleanup', () => {
         locationRequired: true,
         needsArtifact: true,
         chaseGuidanceLevel: 'general-target',
+        answerMode: 'single',
+        candidateMode: 'named',
+        rankLimit: 1,
       },
       'can you show on a map where i should go and mark the times i should be there',
       [

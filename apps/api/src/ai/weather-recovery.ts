@@ -1,7 +1,22 @@
 import type { RequestClassification } from '@raincheck/contracts'
 import type { FastifyInstance } from 'fastify'
 
+import {
+  applyAnswerToneToText,
+  buildComparisonLimitationText,
+} from './answer-tone'
+import type { WeatherAnswerContext } from './weather-context'
 import { buildWeatherDerivationRequest, planWeatherDerivations } from '../weather/derivation-plan'
+import {
+  isBroadSevereLocatorQuestion,
+  resolveOriginLocation,
+  selectBroadChaseTarget,
+} from '../weather/chase-targeting'
+import {
+  buildComparisonLimitationContext,
+  isWeatherComparisonBundle,
+  runWeatherComparison,
+} from '../weather/comparison'
 import { geocodeQuery } from '../weather/geocode'
 import {
   deriveGlobalWeather,
@@ -91,6 +106,56 @@ function latestRecoveredLocationQuery(
   return null
 }
 
+async function buildComparisonLimitationResult(input: {
+  app: FastifyInstance
+  classification: RequestClassification
+  userQuestion: string
+  answerTone: 'casual' | 'professional'
+  context?: WeatherAnswerContext
+  messages?: Array<any>
+}) {
+  const comparisonContext = await buildComparisonLimitationContext({
+    app: input.app,
+    classification: input.classification,
+    userQuestion: input.userQuestion,
+    context: input.context,
+    messages: input.messages,
+  })
+
+  return {
+    answerMode: input.classification.answerMode,
+    rankingObjective:
+      input.classification.rankingObjective ??
+      (input.classification.intent === 'severe-weather'
+        ? 'severe-favorability'
+        : 'pleasant-weather'),
+    rankLimit: input.classification.rankLimit,
+    bottomLine: buildComparisonLimitationText(
+      input.classification,
+      input.answerTone,
+    ),
+    confidence: {
+      level: 'low' as const,
+      reason: applyAnswerToneToText(
+        'The comparison still needs a usable search area or named places.',
+        input.answerTone,
+      ),
+    },
+    whyRainCheckThinksThat: applyAnswerToneToText(
+      'The ranking can only run after at least one place or search area resolves cleanly.',
+      input.answerTone,
+    ),
+    sharedUncertainty: applyAnswerToneToText(
+      `The current request still needs a clear region or a clearer set of places for "${input.userQuestion.trim()}".`,
+      input.answerTone,
+    ),
+    rankedCandidates: [],
+    recommendedCards: [],
+    citations: [],
+    comparisonContext,
+  }
+}
+
 function latestRecoveredLocation(
   toolResults: Array<WeatherRecoveryToolResult>,
 ) {
@@ -150,16 +215,38 @@ function inferLocationQueryFromQuestion(userQuestion: string) {
   return locationMatch?.[1]?.trim() ?? null
 }
 
-function isBroadSevereLocatorQuestion(
+function defaultLocationQueryFromContext(context?: WeatherAnswerContext) {
+  const locationHint = context?.locationHint
+  if (!locationHint) {
+    return null
+  }
+
+  if (
+    typeof locationHint.latitude === 'number' &&
+    Number.isFinite(locationHint.latitude) &&
+    typeof locationHint.longitude === 'number' &&
+    Number.isFinite(locationHint.longitude)
+  ) {
+    return `${locationHint.latitude}, ${locationHint.longitude}`
+  }
+
+  const candidates = [
+    typeof locationHint.name === 'string' ? locationHint.name.trim() : '',
+    typeof locationHint.label === 'string' ? locationHint.label.trim() : '',
+  ]
+
+  return candidates.find((candidate) => candidate.length > 0) ?? null
+}
+
+function prefersNationalSevereContext(
   classification: RequestClassification,
   userQuestion: string,
 ) {
-  if (classification.intent !== 'severe-weather' || classification.locationRequired) {
-    return false
-  }
-
-  return /\b(where (?:are|will|is)|best (?:storms?|spot|place|area)|start chasing|start the chase|where should i start|what time and where|where should i go|where should i be|follow these storms)\b/i.test(
-    userQuestion,
+  return (
+    classification.intent === 'severe-weather' &&
+    /\bspc\b|\bconvective outlook\b|\bday\s*[1-9](?:\s*(?:and|&|-)\s*[1-9])?\b/i.test(
+      userQuestion,
+    )
   )
 }
 
@@ -167,10 +254,12 @@ function candidateLocationQueries(
   classification: RequestClassification,
   userQuestion: string,
   toolResults: Array<WeatherRecoveryToolResult>,
+  context?: WeatherAnswerContext,
 ) {
   const inferredLocation = inferLocationQueryFromQuestion(userQuestion)
   const broadRecoveredLocation = broadenRecoveredLocationQuery(toolResults)
   const recoveredLocation = latestRecoveredLocationQuery(toolResults)
+  const defaultLocation = defaultLocationQueryFromContext(context)
   const broadSevereLocator = isBroadSevereLocatorQuestion(
     classification,
     userQuestion,
@@ -179,15 +268,20 @@ function candidateLocationQueries(
     ? [
         inferredLocation,
         broadRecoveredLocation,
-        classification.locationRequired ? null : 'United States',
+        defaultLocation,
         recoveredLocation,
         classification.locationRequired ? userQuestion : null,
       ]
     : [
         recoveredLocation,
         inferredLocation,
+        defaultLocation,
         classification.locationRequired ? userQuestion : null,
-        classification.locationRequired ? null : 'United States',
+        classification.locationRequired
+          ? prefersNationalSevereContext(classification, userQuestion)
+            ? 'United States'
+            : null
+          : 'United States',
       ]
 
   const seen = new Set<string>()
@@ -205,19 +299,6 @@ function candidateLocationQueries(
     seen.add(key)
     return true
   })
-}
-
-function confidenceSummary(result: Record<string, any>) {
-  const confidence = result.confidence
-  if (isRecord(confidence) && typeof confidence.level === 'string') {
-    return `Confidence: ${confidence.level}.`
-  }
-
-  if (typeof confidence === 'string') {
-    return `Confidence: ${confidence}.`
-  }
-
-  return null
 }
 
 const SECTION_STOP_WORDS = new Set([
@@ -297,15 +378,195 @@ function sectionsMostlyOverlap(candidate: string, existing: string) {
   return overlap / Math.min(candidateTokens.size, existingTokens.size) >= 0.5
 }
 
+function stripTerminalPunctuation(value: string) {
+  return normalizeTimingLanguage(value)
+    .trim()
+    .replace(/[.!?;:]+$/, '')
+    .trim()
+}
+
+function terminalPunctuation(value: string) {
+  const match = normalizeTimingLanguage(value).trim().match(/[.!?]+$/)
+  if (!match) {
+    return '.'
+  }
+
+  if (match[0].includes('?')) {
+    return '?'
+  }
+
+  if (match[0].includes('!')) {
+    return '!'
+  }
+
+  return '.'
+}
+
+function normalizeSentence(value: string | null | undefined) {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const body = stripTerminalPunctuation(value)
+  if (!body) {
+    return null
+  }
+
+  return `${body}${terminalPunctuation(value)}`
+}
+
+function lowerSentenceStart(value: string) {
+  if (!value) {
+    return value
+  }
+
+  if (/^[A-Z]{2,}\b/.test(value)) {
+    return value
+  }
+
+  return value.charAt(0).toLowerCase() + value.slice(1)
+}
+
+function confidenceLevelValue(result: Record<string, any>) {
+  const confidence = result.confidence
+  return isRecord(confidence) && typeof confidence.level === 'string'
+    ? confidence.level
+    : typeof confidence === 'string'
+      ? confidence
+      : null
+}
+
+function confidenceReasonValue(result: Record<string, any>) {
+  const confidence = result.confidence
+  return isRecord(confidence) && typeof confidence.reason === 'string'
+    ? confidence.reason
+    : null
+}
+
+function isGenericConfidenceReason(reason: string) {
+  return (
+    /\bconfidence reflects\b/i.test(reason) ||
+    /\bdirect candidate evidence\b/i.test(reason) ||
+    /\bleading candidate separates\b/i.test(reason) ||
+    /\bweighted strength\b/i.test(reason) ||
+    /\bleading evidence\b/i.test(reason) ||
+    /\bunresolved conflicts\b/i.test(reason)
+  )
+}
+
+function readableConfidenceReason(result: Record<string, any>) {
+  const reason = confidenceReasonValue(result)
+  if (!reason || isGenericConfidenceReason(reason)) {
+    return null
+  }
+
+  return lowerSentenceStart(stripTerminalPunctuation(reason))
+}
+
+function hasConditionalLanguage(...values: Array<unknown>) {
+  return values.some(
+    (value) =>
+      typeof value === 'string' &&
+      /\bconditional\b|\bdepends on\b|\bstill depends\b|\bcan still shift\b|\bmay still shift\b|\bmight still shift\b|\bnot locked\b|\bstill too close\b|\bsensitive to\b/i.test(
+        value,
+      ),
+  )
+}
+
+function comparisonGap(result: Record<string, any>) {
+  const ranked = Array.isArray(result.rankedCandidates)
+    ? result.rankedCandidates
+    : []
+  const winner = ranked[0]
+  const runnerUp = ranked[1]
+  if (
+    !winner ||
+    !runnerUp ||
+    typeof winner.score !== 'number' ||
+    typeof runnerUp.score !== 'number'
+  ) {
+    return null
+  }
+
+  return Math.max(0, winner.score - runnerUp.score)
+}
+
+function comparisonConfidenceSentence(result: Record<string, any>) {
+  const level = confidenceLevelValue(result)
+  const reason = readableConfidenceReason(result)
+  const gap = comparisonGap(result)
+
+  if (level === 'low') {
+    return reason
+      ? `Confidence is still low because ${reason}.`
+      : 'Confidence is still low.'
+  }
+
+  if (typeof gap === 'number' && (gap < 0.08 || (level === 'medium' && gap < 0.14))) {
+    return 'It is still a fairly close call.'
+  }
+
+  return null
+}
+
+function conclusionConfidenceSentence(result: Record<string, any>) {
+  const level = confidenceLevelValue(result)
+  const reason = readableConfidenceReason(result)
+  const conditional = hasConditionalLanguage(
+    result.bottomLine,
+    result.mostLikelyScenario,
+    ...(Array.isArray(result.keyConflicts) ? result.keyConflicts : []),
+    ...(Array.isArray(result.bustRisks) ? result.bustRisks : []),
+  )
+
+  if (level === 'low') {
+    return reason
+      ? `Confidence is still low because ${reason}.`
+      : 'Confidence is still low.'
+  }
+
+  if (conditional) {
+    return reason
+      ? `It is still a conditional call because ${reason}.`
+      : 'It is still a conditional call.'
+  }
+
+  return null
+}
+
+function uncertaintySentence(value: string | null | undefined) {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const detail = stripTerminalPunctuation(value)
+  if (!detail) {
+    return null
+  }
+
+  if (
+    /\bdepends\b|\bdependent\b|\bconditional\b|\buncertain\b|\bsensitive\b|\bcan\b|\bcould\b|\bmay\b|\bmight\b|\bshift\b|\bwobble\b|\bchange\b|\bmove\b/i.test(
+      detail,
+    )
+  ) {
+    return `${detail}.`
+  }
+
+  return `The main thing that could still shift this is ${lowerSentenceStart(detail)}.`
+}
+
+function joinSentences(parts: Array<string | null | undefined>) {
+  return parts
+    .map((part) => normalizeSentence(part))
+    .filter((part): part is string => Boolean(part))
+    .join(' ')
+}
+
 function pushUniqueSection(
   sections: string[],
   candidate: string | null | undefined,
 ) {
-  if (typeof candidate !== 'string') {
-    return
-  }
-
-  const normalized = normalizeTimingLanguage(candidate).trim()
+  const normalized = normalizeSentence(candidate)
   if (!normalized) {
     return
   }
@@ -317,79 +578,52 @@ function pushUniqueSection(
   sections.push(normalized)
 }
 
-function conclusionSections(
-  result: Record<string, any>,
-  options?: { includeAgreement?: boolean },
-) {
-  const sections: string[] = []
-  const keyConflicts = Array.isArray(result.keyConflicts)
-    ? result.keyConflicts.filter((value): value is string => typeof value === 'string')
-    : []
-  const bustRisks = Array.isArray(result.bustRisks)
-    ? result.bustRisks.filter((value): value is string => typeof value === 'string')
-    : []
-
-  pushUniqueSection(sections, result.bottomLine)
-  pushUniqueSection(
-    sections,
-    typeof result.mostLikelyScenario === 'string'
-      ? `Most likely: ${result.mostLikelyScenario}`
-      : null,
-  )
-  pushUniqueSection(sections, confidenceSummary(result))
-  if (options?.includeAgreement) {
-    pushUniqueSection(
-      sections,
-      typeof result.agreementSummary === 'string'
-        ? `Agreement: ${result.agreementSummary}.`
-        : null,
-    )
-  }
-  pushUniqueSection(
-    sections,
-    keyConflicts.length > 0
-      ? `Main uncertainty: ${keyConflicts[0]}.`
-      : null,
-  )
-  pushUniqueSection(
-    sections,
-    bustRisks.length > 0
-      ? `Bust risk: ${bustRisks[0]}.`
-      : null,
-  )
-
-  return sections
+function firstString(
+  value: unknown,
+): string | null {
+  return typeof value === 'string' && value.trim() ? value : null
 }
 
-function conflictSummary(result: Record<string, any>) {
-  const conflicts = Array.isArray(result.keyConflicts)
-    ? result.keyConflicts.filter((value): value is string => typeof value === 'string')
-    : []
-  if (conflicts.length > 0) {
-    return `Main uncertainty: ${normalizeTimingLanguage(conflicts[0])}.`
-  }
+function firstListString(value: unknown) {
+  return Array.isArray(value)
+    ? (value.find(
+        (item): item is string =>
+          typeof item === 'string' && item.trim().length > 0,
+      ) ??
+      null)
+    : null
+}
 
-  const bustRisks = Array.isArray(result.bustRisks)
-    ? result.bustRisks.filter((value): value is string => typeof value === 'string')
-    : []
-  if (bustRisks.length > 0) {
-    return `Bust risk: ${normalizeTimingLanguage(bustRisks[0])}.`
-  }
+function comparisonSupportSentence(result: Record<string, any>) {
+  const winner = Array.isArray(result.rankedCandidates)
+    ? result.rankedCandidates[0]
+    : null
 
-  return null
+  return (
+    firstString(winner?.why) ??
+    firstString(winner?.summary) ??
+    firstString(result.whyRainCheckThinksThat)
+  )
+}
+
+function conclusionSupportSentence(result: Record<string, any>) {
+  return (
+    firstString(result.mostLikelyScenario) ??
+    firstListString(result.keySupportingSignals) ??
+    firstString(result.agreementSummary)
+  )
 }
 
 function artifactSectionsFromConclusion(result: Record<string, any>) {
-  const sections = [
-    ...conclusionSections(result, { includeAgreement: false }),
-    conflictSummary(result),
-  ].filter((value, index, values): value is string => {
-    if (!value) {
-      return false
-    }
-
-    return values.findIndex((candidate) => candidate === value) === index
-  })
+  const sections: string[] = []
+  pushUniqueSection(sections, result.bottomLine)
+  pushUniqueSection(sections, conclusionSupportSentence(result))
+  pushUniqueSection(
+    sections,
+    uncertaintySentence(
+      firstListString(result.keyConflicts) ?? firstListString(result.bustRisks),
+    ),
+  )
 
   return sections.length > 0 ? sections : ['Supported weather visual summary.']
 }
@@ -413,18 +647,66 @@ function hasArtifactPayload(toolResults: Array<WeatherRecoveryToolResult>) {
 
 function buildWeatherFallbackText(
   toolResults: Array<WeatherRecoveryToolResult>,
+  answerTone: 'casual' | 'professional' = 'casual',
 ) {
+  const comparisonResult = [...toolResults]
+    .reverse()
+    .map((toolResult) => toolResult.result)
+    .find(isWeatherComparisonBundle)
+
+  if (comparisonResult) {
+    if (
+      !Array.isArray(comparisonResult.rankedCandidates) ||
+      comparisonResult.rankedCandidates.length === 0
+    ) {
+      return applyAnswerToneToText(
+        normalizeTimingLanguage(
+          joinSentences([comparisonResult.bottomLine]),
+        ),
+        answerTone,
+      )
+    }
+
+    const sections: string[] = []
+    pushUniqueSection(sections, comparisonResult.bottomLine)
+    pushUniqueSection(sections, comparisonConfidenceSentence(comparisonResult))
+    pushUniqueSection(sections, comparisonSupportSentence(comparisonResult))
+    pushUniqueSection(
+      sections,
+      uncertaintySentence(
+        firstString(comparisonResult.sharedUncertainty) ??
+          firstListString(comparisonResult.rankedCandidates[0]?.conflicts),
+      ),
+    )
+
+    return applyAnswerToneToText(
+      normalizeTimingLanguage(joinSentences(sections)),
+      answerTone,
+    )
+  }
+
   const conclusionResult = [...toolResults]
     .reverse()
     .map((toolResult) => toolResult.result)
     .find(isWeatherConclusion)
 
   if (conclusionResult) {
-    const summaryText = conclusionSections(conclusionResult, {
-      includeAgreement: false,
-    }).join(' ')
+    const sections: string[] = []
+    pushUniqueSection(sections, conclusionResult.bottomLine)
+    pushUniqueSection(sections, conclusionConfidenceSentence(conclusionResult))
+    pushUniqueSection(sections, conclusionSupportSentence(conclusionResult))
+    pushUniqueSection(
+      sections,
+      uncertaintySentence(
+        firstListString(conclusionResult.keyConflicts) ??
+          firstListString(conclusionResult.bustRisks),
+      ),
+    )
 
-    return normalizeTimingLanguage(summaryText)
+    return applyAnswerToneToText(
+      normalizeTimingLanguage(joinSentences(sections)),
+      answerTone,
+    )
   }
 
   const derivationResult = [...toolResults]
@@ -433,16 +715,16 @@ function buildWeatherFallbackText(
     .find(isDerivationBundle)
 
   if (derivationResult) {
-    return normalizeTimingLanguage(
-      [
-        derivationResult.agreementSummary,
-        Array.isArray(derivationResult.keyConflicts) &&
-        derivationResult.keyConflicts.length > 0
-          ? `Main uncertainty: ${derivationResult.keyConflicts[0]}.`
-          : null,
-      ]
-        .filter(Boolean)
-        .join(' '),
+    const sections: string[] = []
+    pushUniqueSection(sections, derivationResult.agreementSummary)
+    pushUniqueSection(
+      sections,
+      uncertaintySentence(firstListString(derivationResult.keyConflicts)),
+    )
+
+    return applyAnswerToneToText(
+      normalizeTimingLanguage(joinSentences(sections)),
+      answerTone,
     )
   }
 
@@ -452,7 +734,10 @@ function buildWeatherFallbackText(
     .find(isWeatherEnvelope)
 
   if (latestWeatherResult) {
-    return normalizeTimingLanguage(latestWeatherResult.summary)
+    return applyAnswerToneToText(
+      normalizeTimingLanguage(latestWeatherResult.summary),
+      answerTone,
+    )
   }
 
   return null
@@ -481,6 +766,8 @@ function buildResolvedLocation(location: Record<string, any>) {
       typeof location.region === 'string' ? location.region : undefined,
     country:
       typeof location.country === 'string' ? location.country : undefined,
+    timezone:
+      typeof location.timezone === 'string' ? location.timezone : undefined,
     resolvedBy:
       typeof location.resolvedBy === 'string'
         ? location.resolvedBy
@@ -492,14 +779,21 @@ async function buildRecoveryDerivationResults(input: {
   app: FastifyInstance
   classification: RequestClassification
   userQuestion: string
-  locationQuery: string
+  locationQuery?: string
+  location?: ReturnType<typeof buildResolvedLocation> | null
 }) {
-  let location: ReturnType<typeof buildResolvedLocation> | null = null
-  try {
-    location = buildResolvedLocation(
-      await geocodeQuery(input.app, input.locationQuery),
-    )
-  } catch {
+  let location = input.location ?? null
+  if (!location && input.locationQuery) {
+    try {
+      location = buildResolvedLocation(
+        await geocodeQuery(input.app, input.locationQuery),
+      )
+    } catch {
+      return { location: null, results: [] as Array<WeatherRecoveryToolResult> }
+    }
+  }
+
+  if (!location) {
     return { location: null, results: [] as Array<WeatherRecoveryToolResult> }
   }
 
@@ -571,19 +865,63 @@ export async function recoverWeatherToolResults(
   classification: RequestClassification,
   userQuestion: string,
   toolResults: Array<WeatherRecoveryToolResult>,
+  context?: WeatherAnswerContext,
+  messages?: Array<any>,
 ) {
   if (!userQuestion.trim()) {
     return []
   }
 
-  const recovered: Array<WeatherRecoveryToolResult> = []
+  const answerTone = context?.answerTone ?? 'casual'
   const existingToolNames = new Set(
     toolResults.map((toolResult) => toolResult.toolName),
   )
+  if (classification.answerMode !== 'single') {
+    if (existingToolNames.has('compare_weather_candidates')) {
+      return []
+    }
+
+    const comparisonResult =
+      (await runWeatherComparison({
+        app,
+        classification,
+        userQuestion,
+        context,
+        messages,
+      })) ??
+      (await buildComparisonLimitationResult({
+        app,
+        classification,
+        userQuestion,
+        answerTone,
+        context,
+        messages,
+      }))
+
+    return [
+      {
+        toolCallId: 'recovery-compare_weather_candidates',
+        toolName: 'compare_weather_candidates',
+        input: {
+          userQuestion,
+          workflow: classification.intent,
+          answerMode: classification.answerMode,
+          candidateMode: classification.candidateMode,
+          rankLimit: classification.rankLimit,
+          rankingObjective: classification.rankingObjective,
+          answerTone,
+        },
+        result: comparisonResult,
+      },
+    ]
+  }
+
+  const recovered: Array<WeatherRecoveryToolResult> = []
   const locationQueries = candidateLocationQueries(
     classification,
     userQuestion,
     toolResults,
+    context,
   )
 
   if (locationQueries.length === 0) {
@@ -593,23 +931,102 @@ export async function recoverWeatherToolResults(
   let location: ReturnType<typeof buildResolvedLocation> | null = null
   let results: Array<WeatherRecoveryToolResult> = []
   let locationQuery: string | null = null
+  let originLocation: ReturnType<typeof buildResolvedLocation> | null = null
+  let selectedTarget:
+    | {
+        query: string
+        label: string
+        location: ReturnType<typeof buildResolvedLocation>
+        regionLabel?: string
+        startLabel?: string
+        stopLabel?: string
+        travelHours?: number
+        corridorHours?: number
+        withinNearbyRadius?: boolean
+        supportScore?: number
+      }
+    | null = null
+  let nightfall:
+    | {
+        event: 'civil-dusk' | 'sunset'
+        occursAt: string
+      }
+    | null = null
 
-  for (const candidate of locationQueries) {
-    const recoveredDerivations = await buildRecoveryDerivationResults({
+  if (isBroadSevereLocatorQuestion(classification, userQuestion)) {
+    const resolvedOriginLocation = await resolveOriginLocation({
       app,
-      classification,
-      userQuestion,
-      locationQuery: candidate,
+      context,
+      fallbackLocation: latestRecoveredLocation(toolResults)
+        ? buildResolvedLocation(latestRecoveredLocation(toolResults)!)
+        : null,
     })
+    originLocation = resolvedOriginLocation
+      ? buildResolvedLocation(resolvedOriginLocation as any)
+      : null
 
-    if (!recoveredDerivations.location) {
-      continue
+    if (originLocation) {
+      try {
+        const chaseTarget = await selectBroadChaseTarget({
+          app,
+          originLocation,
+          referenceTime: new Date().toISOString(),
+        })
+        if (chaseTarget) {
+          location = buildResolvedLocation(chaseTarget.selectedTarget.location)
+          locationQuery = chaseTarget.selectedTarget.query
+          selectedTarget = {
+            ...chaseTarget.selectedTarget,
+            location,
+          }
+          nightfall = chaseTarget.nightfall
+
+          if (!existingToolNames.has('get_severe_context')) {
+            recovered.push({
+              toolCallId: 'recovery-get_severe_context',
+              toolName: 'get_severe_context',
+              input: {
+                locationQuery: chaseTarget.severeContextQuery,
+              },
+              result: chaseTarget.severeContext,
+            })
+            existingToolNames.add('get_severe_context')
+          }
+
+          const recoveredDerivations = await buildRecoveryDerivationResults({
+            app,
+            classification,
+            userQuestion,
+            locationQuery,
+            location,
+          })
+
+          results = recoveredDerivations.results
+        }
+      } catch {
+        // Best-effort recovery only.
+      }
     }
+  }
 
-    location = recoveredDerivations.location
-    results = recoveredDerivations.results
-    locationQuery = candidate
-    break
+  if (!location) {
+    for (const candidate of locationQueries) {
+      const recoveredDerivations = await buildRecoveryDerivationResults({
+        app,
+        classification,
+        userQuestion,
+        locationQuery: candidate,
+      })
+
+      if (!recoveredDerivations.location) {
+        continue
+      }
+
+      location = recoveredDerivations.location
+      results = recoveredDerivations.results
+      locationQuery = candidate
+      break
+    }
   }
 
   if (!location) {
@@ -658,6 +1075,12 @@ export async function recoverWeatherToolResults(
             recentHours: Math.min(classification.timeHorizonHours || 6, 72),
           },
           chaseGuidanceLevel: classification.chaseGuidanceLevel,
+          originLocation: originLocation ?? undefined,
+          displayTimezone: context?.displayTimezone,
+          answerTone,
+          timeDisplay: context?.timeDisplay ?? 'user-local',
+          selectedTarget: selectedTarget ?? undefined,
+          nightfall: nightfall ?? undefined,
           evidenceProducts: evidenceProductsFromToolResults(combinedToolResults),
           supportingBundles,
         }

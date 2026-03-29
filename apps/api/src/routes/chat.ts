@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 
 import { streamResponseToFastify, toSseResponse } from '../ai/chat-service'
+import { runtimeHeaders, withRuntimeInfoEvent } from '../runtime/info'
 
 export async function registerChatRoutes(app: FastifyInstance) {
   app.post('/api/chat', async (request, reply) => {
@@ -9,19 +10,23 @@ export async function registerChatRoutes(app: FastifyInstance) {
       messages?: Array<any>
       provider?: 'openai' | 'anthropic' | 'gemini' | 'openrouter'
       model?: string
+      displayTimezone?: string
       locationOverride?: {
         label?: string
         latitude?: number
         longitude?: number
+        timezone?: string
       }
       data?: {
         conversationId?: string
         provider?: 'openai' | 'anthropic' | 'gemini' | 'openrouter'
         model?: string
+        displayTimezone?: string
         locationOverride?: {
           label?: string
           latitude?: number
           longitude?: number
+          timezone?: string
         }
       }
     }
@@ -31,12 +36,20 @@ export async function registerChatRoutes(app: FastifyInstance) {
       messages: Array.isArray(rawBody.messages) ? rawBody.messages : [],
       provider: rawBody.provider ?? rawBody.data?.provider,
       model: rawBody.model ?? rawBody.data?.model,
+      displayTimezone: rawBody.displayTimezone ?? rawBody.data?.displayTimezone,
       locationOverride:
         rawBody.locationOverride ?? rawBody.data?.locationOverride,
     }
     const result = await app.raincheckChatHandler(app, body)
-    reply.header('x-raincheck-route', JSON.stringify(result.route))
-    const response = toSseResponse(result.stream)
+    const response = toSseResponse(
+      withRuntimeInfoEvent(result.stream, app.raincheckRuntime),
+      {
+        headers: {
+          ...runtimeHeaders(app.raincheckRuntime),
+          'x-raincheck-route': JSON.stringify(result.route),
+        },
+      },
+    )
     await streamResponseToFastify(app, reply, response)
   })
 }

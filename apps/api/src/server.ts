@@ -11,6 +11,16 @@ app
     host: '0.0.0.0',
     port: Number(process.env.PORT ?? 3001),
   })
+  .then((address) => {
+    app.log.info(
+      {
+        address,
+        runtimeId: app.raincheckRuntime.runtimeId,
+        weatherServiceUrl: app.raincheckRuntime.weatherServiceUrl,
+      },
+      'RainCheck API listening',
+    )
+  })
   .catch((error) => {
     app.log.error(error)
     process.exit(1)

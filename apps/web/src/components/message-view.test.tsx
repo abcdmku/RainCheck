@@ -126,6 +126,7 @@ describe('MessageView', () => {
 
     const [trigger] = screen.getAllByRole('button', { name: /sources/i })
     expect(trigger).toBeTruthy()
+    expect(trigger.textContent).toBe('Sources')
 
     fireEvent.click(trigger)
     expect(screen.getByRole('link', { name: 'SPC Day 2' })).toBeTruthy()

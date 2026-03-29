@@ -9,18 +9,27 @@ import {
 import { toolCacheMiddleware } from '@tanstack/ai/middlewares'
 import type { FastifyInstance } from 'fastify'
 import { getConversation, saveMessage } from '../services/conversations-service'
-import { getProviderKeyMap, getSettings } from '../services/settings-service'
+import {
+  getProviderRouteStateMap,
+  getSettings,
+} from '../services/settings-service'
+import { isWeatherComparisonBundle } from '../weather/comparison'
+import { normalizeTimingLanguage } from '../weather/timing-language'
 import { buildAdapter } from './adapters'
+import {
+  buildComparisonLimitationText as buildToneAwareComparisonLimitationText,
+  buildSevereWeatherLimitationText as buildToneAwareSevereWeatherLimitationText,
+} from './answer-tone'
 import { classifyConversationRequest } from './classify-request'
 import { sanitizeToolsForGemini } from './gemini-tool-schemas'
 import { chooseRoute } from './provider-routing'
 import { buildSystemPrompt } from './system-prompt'
 import { buildServerTools } from './tools'
+import type { WeatherAnswerContext } from './weather-context'
 import {
   buildWeatherFallbackText,
   recoverWeatherToolResults,
 } from './weather-recovery'
-import { normalizeTimingLanguage } from '../weather/timing-language'
 
 function extractTextContent(message: any) {
   if (!message) {
@@ -43,7 +52,10 @@ function extractTextContent(message: any) {
 
 function sanitizeHistoricalMessageParts(parts: Array<any>) {
   return parts.filter(
-    (part) => part?.type !== 'tool-call' && part?.type !== 'tool-result',
+    (part) =>
+      part?.type !== 'tool-call' &&
+      part?.type !== 'tool-result' &&
+      part?.type !== 'weather-comparison-context',
   )
 }
 
@@ -61,6 +73,12 @@ export type CompletedToolResult = {
 function hasSynthesisToolResult(toolResults: Array<CompletedToolResult>) {
   return toolResults.some(
     (toolResult) => toolResult.toolName === 'synthesize_weather_conclusion',
+  )
+}
+
+function hasComparisonToolResult(toolResults: Array<CompletedToolResult>) {
+  return toolResults.some(
+    (toolResult) => toolResult.toolName === 'compare_weather_candidates',
   )
 }
 
@@ -144,7 +162,10 @@ async function* streamTextFallback(
 function shouldBufferSevereWeatherResponse(
   classification: RequestClassification,
 ) {
-  return classification.intent === 'severe-weather'
+  return (
+    classification.intent === 'severe-weather' ||
+    classification.answerMode !== 'single'
+  )
 }
 
 const severeWeatherRefusalPatterns = [
@@ -174,24 +195,45 @@ export function isSevereWeatherRefusalText(text: string) {
 
 function buildSevereWeatherLimitationText(
   classification: RequestClassification,
+  answerTone: WeatherAnswerContext['answerTone'],
 ) {
-  switch (classification.chaseGuidanceLevel) {
-    case 'full-route':
-      return 'RainCheck could not assemble enough live severe-weather evidence to support a route-level chase call yet. Try again after the next radar or model update.'
-    case 'exact-target':
-      return 'RainCheck could not assemble enough live severe-weather evidence to support an exact town or corridor target yet. Try again after the next radar or model update.'
-    case 'general-target':
-      return 'RainCheck could not assemble enough live severe-weather evidence to support a starting chase corridor yet. Try again after the next radar or model update.'
-    case 'analysis-only':
-    default:
-      return 'RainCheck could not assemble enough live severe-weather evidence to support a confident setup call yet. Try again after the next radar or model update.'
-  }
+  return buildToneAwareSevereWeatherLimitationText(classification, answerTone)
 }
 
-function extractBufferedRunMetadata(
-  chunks: Array<StreamChunk>,
-  model: string,
+function buildComparisonLimitationText(
+  classification: RequestClassification,
+  answerTone: WeatherAnswerContext['answerTone'],
 ) {
+  return buildToneAwareComparisonLimitationText(classification, answerTone)
+}
+
+function buildGuardedWeatherFallbackText(
+  classification: RequestClassification,
+  toolResults: Array<CompletedToolResult>,
+  answerTone: WeatherAnswerContext['answerTone'],
+) {
+  if (classification.answerMode !== 'single') {
+    return (
+      buildWeatherFallbackText(toolResults, answerTone) ??
+      buildComparisonLimitationText(classification, answerTone)
+    )
+  }
+
+  if (classification.intent !== 'severe-weather') {
+    return buildWeatherFallbackText(toolResults, answerTone)
+  }
+
+  if (hasSynthesisToolResult(toolResults)) {
+    return (
+      buildWeatherFallbackText(toolResults, answerTone) ??
+      buildSevereWeatherLimitationText(classification, answerTone)
+    )
+  }
+
+  return buildSevereWeatherLimitationText(classification, answerTone)
+}
+
+function extractBufferedRunMetadata(chunks: Array<StreamChunk>, model: string) {
   const runStart = chunks.find(
     (chunk): chunk is Extract<StreamChunk, { type: 'RUN_STARTED' }> =>
       chunk.type === 'RUN_STARTED',
@@ -204,10 +246,15 @@ function extractBufferedRunMetadata(
 }
 
 function shouldRecoverBufferedSevereWeatherAnswer(input: {
+  classification: RequestClassification
   text: string
   toolResults: Array<CompletedToolResult>
   hadRunError: boolean
 }) {
+  if (input.classification.answerMode !== 'single') {
+    return input.hadRunError || !hasComparisonToolResult(input.toolResults)
+  }
+
   if (input.hadRunError) {
     return true
   }
@@ -216,7 +263,7 @@ function shouldRecoverBufferedSevereWeatherAnswer(input: {
     return true
   }
 
-  return !input.text.trim() && !hasSynthesisToolResult(input.toolResults)
+  return !hasSynthesisToolResult(input.toolResults)
 }
 
 async function* streamBufferedWeatherReplacement(input: {
@@ -480,6 +527,7 @@ const hiddenAssistantToolNames = new Set([
   'save_ui_preference',
   'open_artifact_view',
   'synthesize_weather_conclusion',
+  'compare_weather_candidates',
 ])
 
 function extractResultSourceTags(result: unknown) {
@@ -608,6 +656,8 @@ function buildGeminiSystemPrompts(systemPrompt: string) {
 
 export async function* streamGeminiWithToolContext(input: {
   adapter: any
+  answerTone: WeatherAnswerContext['answerTone']
+  classification: RequestClassification
   messages: Array<any>
   tools: Array<any>
   systemPrompt: string
@@ -682,10 +732,11 @@ export async function* streamGeminiWithToolContext(input: {
         } satisfies StreamChunk
       }
 
-      const fallbackText = buildWeatherFallbackText([
-        ...recoveredToolResults,
-        ...completedToolResults,
-      ])
+      const fallbackText = buildGuardedWeatherFallbackText(
+        input.classification,
+        [...recoveredToolResults, ...completedToolResults],
+        input.answerTone,
+      )
       if (fallbackText) {
         yield* streamTextFallback(
           fallbackText,
@@ -716,7 +767,11 @@ export async function* streamGeminiWithToolContext(input: {
         } satisfies StreamChunk
       }
 
-      const fallbackText = buildWeatherFallbackText(recoveredToolResults)
+      const fallbackText = buildGuardedWeatherFallbackText(
+        input.classification,
+        recoveredToolResults,
+        input.answerTone,
+      )
       if (fallbackText) {
         yield* streamTextFallback(
           fallbackText,
@@ -757,8 +812,12 @@ export async function* streamGeminiWithToolContext(input: {
       } satisfies StreamChunk
     }
 
-    const fallbackText = buildWeatherFallbackText(recoveredToolResults)
-    if (fallbackText && hasSynthesisToolResult(recoveredToolResults)) {
+    const fallbackText = buildGuardedWeatherFallbackText(
+      input.classification,
+      recoveredToolResults,
+      input.answerTone,
+    )
+    if (fallbackText) {
       yield* streamTextFallback(
         fallbackText,
         String(input.adapter?.model ?? 'gemini'),
@@ -801,7 +860,11 @@ export async function* streamGeminiWithToolContext(input: {
       } satisfies StreamChunk
     }
 
-    const fallbackText = buildWeatherFallbackText(recoveredToolResults)
+    const fallbackText = buildGuardedWeatherFallbackText(
+      input.classification,
+      recoveredToolResults,
+      input.answerTone,
+    )
     if (fallbackText) {
       yield* streamTextFallback(
         fallbackText,
@@ -816,6 +879,7 @@ export async function* streamGeminiWithToolContext(input: {
 
 export async function* streamValidatedSevereWeatherResponse(input: {
   stream: AsyncIterable<StreamChunk>
+  answerTone: WeatherAnswerContext['answerTone']
   classification: RequestClassification
   route: {
     provider: 'openai' | 'anthropic' | 'gemini' | 'openrouter'
@@ -864,6 +928,7 @@ export async function* streamValidatedSevereWeatherResponse(input: {
 
   if (
     !shouldRecoverBufferedSevereWeatherAnswer({
+      classification: input.classification,
       text: assistantText,
       toolResults: completedToolResults,
       hadRunError,
@@ -876,14 +941,20 @@ export async function* streamValidatedSevereWeatherResponse(input: {
   }
 
   const recoveryResults = await input.recoverToolResults(completedToolResults)
-  const fallbackText =
-    buildWeatherFallbackText([...completedToolResults, ...recoveryResults]) ??
-    buildSevereWeatherLimitationText(input.classification)
+  const combinedRecoveryResults = [...completedToolResults, ...recoveryResults]
+  const fallbackText = buildGuardedWeatherFallbackText(
+    input.classification,
+    combinedRecoveryResults,
+    input.answerTone,
+  )
+  const replacementText =
+    fallbackText ??
+    buildSevereWeatherLimitationText(input.classification, input.answerTone)
 
   yield* streamBufferedWeatherReplacement({
     bufferedChunks,
     model: input.route.model,
-    replacementText: fallbackText,
+    replacementText,
     recoveryResults,
   })
 }
@@ -930,7 +1001,7 @@ function buildMiddleware(app: FastifyInstance) {
   ]
 }
 
-async function persistIncomingUserMessage(
+export async function persistIncomingUserMessage(
   app: FastifyInstance,
   conversationId: string,
   messages: Array<any>,
@@ -945,6 +1016,7 @@ async function persistIncomingUserMessage(
       alreadyAnswered: false,
       clientMessageId,
       text: '',
+      userMessageId: null,
     }
   }
 
@@ -963,6 +1035,7 @@ async function persistIncomingUserMessage(
         ),
         clientMessageId,
         text: userContent,
+        userMessageId: conversation.messages[duplicateUserIndex]?.id ?? null,
       }
     }
   }
@@ -976,10 +1049,11 @@ async function persistIncomingUserMessage(
       alreadyAnswered: false,
       clientMessageId,
       text: userContent,
+      userMessageId: lastPersisted.id,
     }
   }
 
-  await saveMessage(app, {
+  const savedMessage = await saveMessage(app, {
     conversationId,
     role: 'user',
     content: userContent,
@@ -996,10 +1070,11 @@ async function persistIncomingUserMessage(
     alreadyAnswered: false,
     clientMessageId,
     text: userContent,
+    userMessageId: savedMessage.id,
   }
 }
 
-function collectAssistantArtifacts(
+export function collectAssistantArtifacts(
   toolOutputs: Array<{ toolName: string; result: any }>,
 ) {
   const artifacts: Array<Record<string, unknown>> = []
@@ -1033,7 +1108,9 @@ function collectAssistantArtifacts(
 
     const evidenceArtifacts = Array.isArray(result.evidenceProducts)
       ? result.evidenceProducts.flatMap((product: any) =>
-          Array.isArray(product?.artifactHandles) ? product.artifactHandles : [],
+          Array.isArray(product?.artifactHandles)
+            ? product.artifactHandles
+            : [],
         )
       : []
     for (const artifact of evidenceArtifacts) {
@@ -1114,7 +1191,8 @@ export function collectAssistantCitations(
       continue
     }
 
-    const preferred = compareCitations(citation, existing) < 0 ? citation : existing
+    const preferred =
+      compareCitations(citation, existing) < 0 ? citation : existing
     const fallback = preferred === citation ? existing : citation
     deduped.set(key, mergeCitation(preferred, fallback))
   }
@@ -1133,7 +1211,9 @@ function collectCitationLike(
   if (Array.isArray((value as any).citations)) {
     for (const citation of (value as any).citations) {
       if (citation && typeof citation === 'object') {
-        const normalized = normalizeCitationLike(citation as Record<string, unknown>)
+        const normalized = normalizeCitationLike(
+          citation as Record<string, unknown>,
+        )
         if (normalized) {
           citations.push(normalized)
         }
@@ -1161,8 +1241,7 @@ const citationKindPriority: Record<Citation['kind'], number> = {
 
 function citationKindRank(citation: Record<string, unknown>) {
   const kind =
-    typeof citation.kind === 'string' &&
-    citation.kind in citationKindPriority
+    typeof citation.kind === 'string' && citation.kind in citationKindPriority
       ? (citation.kind as Citation['kind'])
       : 'page'
   return citationKindPriority[kind]
@@ -1190,8 +1269,7 @@ function normalizeCitationLike(
   citation: Record<string, unknown>,
 ): Record<string, unknown> | null {
   const kind =
-    typeof citation.kind === 'string' &&
-    citation.kind in citationKindPriority
+    typeof citation.kind === 'string' && citation.kind in citationKindPriority
       ? citation.kind
       : 'page'
   if (kind === 'derived') {
@@ -1230,10 +1308,7 @@ function normalizeProvenanceCitation(
         : String(provenance.sourceId ?? 'Weather source'),
     sourceId: String(provenance.sourceId ?? 'source'),
     productId: String(provenance.productId ?? 'product'),
-    kind:
-      typeof provenance.kind === 'string'
-        ? provenance.kind
-        : 'page',
+    kind: typeof provenance.kind === 'string' ? provenance.kind : 'page',
     url: typeof provenance.url === 'string' ? provenance.url : undefined,
     contextUrl:
       typeof provenance.contextUrl === 'string'
@@ -1244,13 +1319,9 @@ function normalizeProvenanceCitation(
         ? provenance.displayUrl
         : undefined,
     issuedAt:
-      typeof provenance.issuedAt === 'string'
-        ? provenance.issuedAt
-        : undefined,
+      typeof provenance.issuedAt === 'string' ? provenance.issuedAt : undefined,
     validAt:
-      typeof provenance.validAt === 'string'
-        ? provenance.validAt
-        : undefined,
+      typeof provenance.validAt === 'string' ? provenance.validAt : undefined,
   })
 }
 
@@ -1338,6 +1409,50 @@ function normalizeArtifactManifest(value: Record<string, unknown>) {
   }
 }
 
+export function buildAssistantMessageState(input: {
+  text: string
+  toolOutputs: Array<{ toolName: string; result: any }>
+}) {
+  const artifacts = collectAssistantArtifacts(input.toolOutputs)
+  const citations = collectAssistantCitations(input.toolOutputs)
+  const comparisonBundle = [...input.toolOutputs]
+    .reverse()
+    .map((output) => output.result)
+    .find(
+      (result) =>
+        isWeatherComparisonBundle(result) && result.comparisonContext != null,
+    )
+  const visibleToolOutputs = input.toolOutputs.filter((output) =>
+    isVisibleAssistantToolOutput(output.toolName),
+  )
+  const parts = [
+    { type: 'text', content: input.text },
+    ...visibleToolOutputs.map((output, index) => ({
+      type: 'tool-call',
+      id: `tool-${index}`,
+      name: output.toolName,
+      arguments: '{}',
+      state: 'input-complete',
+      output: output.result,
+    })),
+    ...(isWeatherComparisonBundle(comparisonBundle) &&
+    comparisonBundle.comparisonContext
+      ? [
+          {
+            type: 'weather-comparison-context',
+            context: comparisonBundle.comparisonContext,
+          },
+        ]
+      : []),
+  ]
+
+  return {
+    artifacts,
+    citations,
+    parts,
+  }
+}
+
 async function* streamAndPersist(
   app: FastifyInstance,
   input: {
@@ -1345,6 +1460,8 @@ async function* streamAndPersist(
     route: {
       provider: 'openai' | 'anthropic' | 'gemini' | 'openrouter'
       model: string
+      transport?: 'api' | 'local-cli'
+      source?: 'shared-env' | 'local-api-key' | 'desktop-local-cli'
     }
     stream: AsyncIterable<StreamChunk>
   },
@@ -1368,22 +1485,10 @@ async function* streamAndPersist(
     yield chunk
   }
 
-  const artifacts = collectAssistantArtifacts(toolOutputs)
-  const citations = collectAssistantCitations(toolOutputs)
-  const visibleToolOutputs = toolOutputs.filter((output) =>
-    isVisibleAssistantToolOutput(output.toolName),
-  )
-  const parts = [
-    { type: 'text', content: text },
-    ...visibleToolOutputs.map((output, index) => ({
-      type: 'tool-call',
-      id: `tool-${index}`,
-      name: output.toolName,
-      arguments: '{}',
-      state: 'input-complete',
-      output: output.result,
-    })),
-  ]
+  const { artifacts, citations, parts } = buildAssistantMessageState({
+    text,
+    toolOutputs,
+  })
 
   await saveMessage(app, {
     conversationId: input.conversationId,
@@ -1394,6 +1499,8 @@ async function* streamAndPersist(
     artifacts,
     provider: input.route.provider,
     model: input.route.model,
+    transport: input.route.transport ?? 'api',
+    source: input.route.source ?? null,
   })
 }
 
@@ -1404,10 +1511,12 @@ export async function handleChatRequest(
     messages: Array<any>
     provider?: 'openai' | 'anthropic' | 'gemini' | 'openrouter'
     model?: string
+    displayTimezone?: string
     locationOverride?: {
       label?: string
       latitude?: number
       longitude?: number
+      timezone?: string
     }
   },
 ) {
@@ -1416,19 +1525,23 @@ export async function handleChatRequest(
     body.conversationId,
     body.messages,
   )
+  const persistedConversation = await getConversation(app, body.conversationId)
+  const conversationMessages = persistedConversation?.messages?.length
+    ? persistedConversation.messages
+    : body.messages
 
-  const latestMessage = [...body.messages]
+  const latestMessage = [...conversationMessages]
     .reverse()
     .find((message) => message.role === 'user')
   const latestText = incomingUserTurn.text || extractTextContent(latestMessage)
-  const classification = classifyConversationRequest(body.messages)
+  const classification = classifyConversationRequest(conversationMessages)
   const settings = await getSettings(app)
-  const keyMap = await getProviderKeyMap(app)
+  const providerStates = await getProviderRouteStateMap(app)
   const route = chooseRoute({
     env: app.raincheckEnv,
     taskClass: classification.taskClass,
     settings,
-    keyMap,
+    providerStates,
     requestedProvider: body.provider,
     requestedModel: body.model,
   })
@@ -1441,22 +1554,43 @@ export async function handleChatRequest(
     }
   }
 
+  const weatherAnswerContext = {
+    answerTone: settings.answerTone ?? 'casual',
+    locationHint: body.locationOverride,
+    displayTimezone: body.displayTimezone ?? body.locationOverride?.timezone,
+    timeDisplay: settings.timeDisplay ?? 'user-local',
+  } satisfies WeatherAnswerContext
   const adapter = await buildAdapter(app, route)
-  const tools = buildServerTools(app, classification)
+  const tools = buildServerTools(
+    app,
+    classification,
+    weatherAnswerContext,
+    conversationMessages,
+  )
+  const systemPrompt = buildSystemPrompt(classification, weatherAnswerContext)
+
   const providerTools =
     route.provider === 'gemini' ? sanitizeToolsForGemini(tools) : tools
   const preparedMessages = prepareMessagesForProvider(
-    body.messages,
+    conversationMessages,
     route.provider,
   )
-  const systemPrompt = buildSystemPrompt(classification, body.locationOverride)
   const middleware = buildMiddleware(app)
   const recoverToolResults = (toolResults: Array<CompletedToolResult>) =>
-    recoverWeatherToolResults(app, classification, latestText, toolResults)
+    recoverWeatherToolResults(
+      app,
+      classification,
+      latestText,
+      toolResults,
+      weatherAnswerContext,
+      conversationMessages,
+    )
   const baseStream =
     route.provider === 'gemini'
       ? streamGeminiWithToolContext({
           adapter,
+          answerTone: weatherAnswerContext.answerTone,
+          classification,
           messages: preparedMessages,
           tools: providerTools,
           systemPrompt,
@@ -1475,6 +1609,7 @@ export async function handleChatRequest(
         })
   const stream = streamValidatedSevereWeatherResponse({
     stream: baseStream,
+    answerTone: weatherAnswerContext.answerTone,
     classification,
     route,
     latestText,
@@ -1512,6 +1647,9 @@ export async function streamResponseToFastify(
   return app
 }
 
-export function toSseResponse(stream: AsyncIterable<StreamChunk>) {
-  return toServerSentEventsResponse(stream)
+export function toSseResponse(
+  stream: AsyncIterable<StreamChunk>,
+  init?: ResponseInit,
+) {
+  return toServerSentEventsResponse(stream, init)
 }
